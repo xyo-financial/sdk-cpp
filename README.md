@@ -1,5 +1,5 @@
 # XYO.Financial SDK for C++
-![workflow](https://github.com/syniol/xyo-sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main)    ![workflow](https://github.com/syniol/xyo-sdk-cpp/actions/workflows/release.yml/badge.svg)
+![workflow](https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main)    ![workflow](https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg)
 
 <p align="center">
     <a href="https://xyo.financial" target="blank"><img width="420" alt="C++ Mascot for XYO.Financial" src="docs/mascot.png" /></a>
@@ -52,8 +52,8 @@ The C++ SDK can be integrated into your project using one of the following metho
 Since this package is currently distributed via source (and not yet hosted on a public remote), you must first build and install it into your local Conan cache:
 
 ```sh
-git clone https://github.com/syniol/xyo-sdk-cpp.git
-cd xyo-sdk-cpp
+git clone https://github.com/xyo-financial/sdk-cpp.git
+cd sdk-cpp
 conan create . --build=missing
 ```
 
@@ -79,7 +79,7 @@ You can include the SDK directly in your `CMakeLists.txt` without pre-installing
 include(FetchContent)
 FetchContent_Declare(
   xyo-sdk-cpp
-  GIT_REPOSITORY https://github.com/syniol/xyo-sdk-cpp.git
+  GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
   GIT_TAG        v1.1.0
 )
 FetchContent_MakeAvailable(xyo-sdk-cpp)
