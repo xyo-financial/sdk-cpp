@@ -5,10 +5,10 @@ import os
 
 class XyoSdkCppConan(ConanFile):
     name = "xyo-sdk-cpp"
-    version = "1.1.0"
+    version = "1.1.1"
     license = "BSD-3-Clause"
     author = "Syniol Limited"
-    url = "https://github.com/syniol/xyo-sdk-cpp"
+    url = "https://github.com/xyo-financial/sdk-cpp"
     description = "XYO SDK to connect and consume AI Banking Transaction Enrichment API"
     topics = ("xyo", "banking", "enrichment", "sdk")
     settings = "os", "compiler", "build_type", "arch"

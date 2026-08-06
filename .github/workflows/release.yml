@@ -127,7 +127,7 @@ jobs:
           TAG_VER=${{ github.ref_name }}
           TAG_VER=${TAG_VER#v}
           # Dynamically set the exact published tag version in conanfile.txt
-          sed -i "s|xyo-sdk-cpp/1.1.0|xyo-sdk-cpp/$TAG_VER|g" example/conanfile.txt
+          sed -i "s|xyo-sdk-cpp/1.1.1|xyo-sdk-cpp/$TAG_VER|g" example/conanfile.txt
 
       - name: Install Dependencies for Example App
         run: |

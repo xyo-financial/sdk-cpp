@@ -1,6 +1,6 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO syniol/xyo-sdk-cpp
+    REPO xyo-financial/sdk-cpp
     REF "v${VERSION}"
     SHA512 <SHA512_PLACEHOLDER> # Populated automatically by release workflow
     HEAD_REF main

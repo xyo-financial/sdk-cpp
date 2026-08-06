@@ -5,6 +5,12 @@ All notable changes to the XYO C++ SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-06
+
+### Changed
+- Updated repository URLs to `xyo-financial/sdk-cpp`.
+- Bumped SDK version to 1.1.1.
+
 ## [1.1.0] - 2026-07-20
 
 ### Changed
