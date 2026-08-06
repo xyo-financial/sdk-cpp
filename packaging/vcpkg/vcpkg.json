@@ -1,6 +1,6 @@
 {
   "name": "xyo-sdk-cpp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "XYO SDK for transaction enrichment API",
   "homepage": "https://github.com/xyo-financial/sdk-cpp",
   "license": "BSD-3-Clause",

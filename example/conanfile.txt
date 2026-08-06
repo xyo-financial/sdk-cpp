@@ -1,5 +1,5 @@
 [requires]
-xyo-sdk-cpp/1.1.0
+xyo-sdk-cpp/1.1.1
 
 [generators]
 CMakeDeps

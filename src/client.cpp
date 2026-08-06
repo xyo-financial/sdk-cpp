@@ -388,7 +388,7 @@ class CurlTransport final : public HttpTransport {
     WriteContext context{&response.body, max_response_bytes_, false};
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "xyo-sdk-cpp/1.1.0");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "xyo-sdk-cpp/1.1.1");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode code = curl_easy_perform(curl);

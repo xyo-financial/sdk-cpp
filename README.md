@@ -60,7 +60,7 @@ conan create . --build=missing
 Once installed locally, you can add the SDK to your dependencies in your project's `conanfile.txt` or `conanfile.py`:
 ```text
 [requires]
-xyo-sdk-cpp/1.1.0
+xyo-sdk-cpp/1.1.1
 ```
 Then, install it in your project as usual:
 ```sh
@@ -80,7 +80,7 @@ include(FetchContent)
 FetchContent_Declare(
   xyo-sdk-cpp
   GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
-  GIT_TAG        v1.1.0
+  GIT_TAG        v1.1.1
 )
 FetchContent_MakeAvailable(xyo-sdk-cpp)
 ```

@@ -5,7 +5,7 @@ import os
 
 class XyoSdkCppConan(ConanFile):
     name = "xyo-sdk-cpp"
-    version = "1.1.0"
+    version = "1.1.1"
     license = "BSD-3-Clause"
     author = "Syniol Limited"
     url = "https://github.com/xyo-financial/sdk-cpp"
