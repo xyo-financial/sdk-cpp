@@ -28,7 +28,7 @@ jobs:
       - name: Extract CMake Version
         id: cmake_version
         run: |
-          VERSION=$(grep -oE "project\(xyo_sdk_cpp VERSION [0-9]+\.[0-9]+\.[0-9]+" CMakeLists.txt | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
+          VERSION=$(grep -oE "project\((xyo_sdk_cpp|XYOSDK) VERSION [0-9]+\.[0-9]+\.[0-9]+" CMakeLists.txt | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
           echo "CMake version is $VERSION"
           echo "val=$VERSION" >> $GITHUB_OUTPUT
 
@@ -127,7 +127,7 @@ jobs:
           TAG_VER=${{ github.ref_name }}
           TAG_VER=${TAG_VER#v}
           # Dynamically set the exact published tag version in conanfile.txt
-          sed -i "s|xyo-sdk-cpp/1.1.1|xyo-sdk-cpp/$TAG_VER|g" example/conanfile.txt
+          sed -i "s|xyo-sdk-cpp/[0-9.]*|xyo-sdk-cpp/$TAG_VER|g" example/conanfile.txt
 
       - name: Install Dependencies for Example App
         run: |

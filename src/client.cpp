@@ -1,531 +1,277 @@
+// Copyright (c) 2025 Syniol Limited
+// SPDX-License-Identifier: BSD-3-Clause
+
+// ---------------------------------------------------------------------------
+// XYO C++ SDK – thin wrapper over the OpenAPI-generated cpp-restsdk client.
+// All actual HTTP and (de)serialisation is handled by the generated layer.
+// ---------------------------------------------------------------------------
+
 #include "xyo/client.hpp"
 
-#include <curl/curl.h>
+// Generated API + model headers (cpp-restsdk)
+#include "XYOSDK/api/EnrichmentApi.h"
+#include "XYOSDK/ApiClient.h"
+#include "XYOSDK/ApiConfiguration.h"
+#include "XYOSDK/ApiException.h"
+#include "XYOSDK/model/EnrichmentRequest.h"
+#include "XYOSDK/model/EnrichmentResponse.h"
+#include "XYOSDK/model/EnrichTransactions_request_inner.h"
+#include "XYOSDK/model/EnrichTransactionCollectionResponse.h"
+#include "XYOSDK/model/EnrichmentCollectionStatusResponse.h"
 
-#include <algorithm>
-#include <cctype>
+#include <cpprest/details/basic_types.h>
+#include <boost/optional.hpp>
+#include <boost/none.hpp>
 #include <chrono>
-#include <iomanip>
-#include <map>
-#include <mutex>
-#include <random>
-#include <sstream>
-#include <thread>
-#include <utility>
+#include <stdexcept>
+#include <string>
 
 namespace xyo {
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 namespace {
 
-struct Json {
-  enum class Kind { null_value, string, scalar, array, object } kind = Kind::null_value;
-  std::string text;
-  std::vector<Json> array;
-  std::map<std::string, Json> object;
-};
-
-class JsonParser {
- public:
-  explicit JsonParser(const std::string& input, std::size_t max_depth = 64, std::size_t max_nodes = 100'000)
-      : input_(input), max_depth_(max_depth), max_nodes_(max_nodes) {}
-
-  Json parse() {
-    Json result = value();
-    whitespace();
-    if (position_ != input_.size()) fail("trailing content");
-    return result;
-  }
-
- private:
-  const std::string& input_;
-  std::size_t position_ = 0;
-  std::size_t max_depth_;
-  std::size_t max_nodes_;
-  std::size_t current_depth_ = 0;
-  std::size_t nodes_parsed_ = 0;
-
-  [[noreturn]] void fail(const std::string& message) const {
-    throw Error(ErrorCategory::parsing, "invalid JSON response at byte " + std::to_string(position_) +
-                ": " + message);
-  }
-
-  void whitespace() {
-    while (position_ < input_.size() &&
-           std::isspace(static_cast<unsigned char>(input_[position_]))) ++position_;
-  }
-
-  bool consume(char expected) {
-    whitespace();
-    if (position_ < input_.size() && input_[position_] == expected) {
-      ++position_;
-      return true;
-    }
-    return false;
-  }
-
-  void increment_nodes() {
-    ++nodes_parsed_;
-    if (nodes_parsed_ > max_nodes_) {
-      fail("exceeded maximum JSON node limit of " + std::to_string(max_nodes_));
-    }
-  }
-
-  void increment_depth() {
-    ++current_depth_;
-    if (current_depth_ > max_depth_) {
-      fail("exceeded maximum JSON depth limit of " + std::to_string(max_depth_));
-    }
-  }
-
-  void decrement_depth() {
-    if (current_depth_ > 0) {
-      --current_depth_;
-    }
-  }
-
-  Json value() {
-    increment_nodes();
-    whitespace();
-    if (position_ >= input_.size()) fail("expected a value");
-    if (input_[position_] == '"') {
-      Json result;
-      result.kind = Json::Kind::string;
-      result.text = string();
-      return result;
-    }
-    if (input_[position_] == '{') return object();
-    if (input_[position_] == '[') return array();
-    if (input_.compare(position_, 4, "null") == 0) {
-      position_ += 4;
-      return {};
-    }
-    if (input_.compare(position_, 4, "true") == 0) return scalar(4);
-    if (input_.compare(position_, 5, "false") == 0) return scalar(5);
-    if (input_[position_] == '-' ||
-        std::isdigit(static_cast<unsigned char>(input_[position_]))) return number();
-    fail("unsupported value");
-  }
-
-  Json scalar(std::size_t length) {
-    Json result;
-    result.kind = Json::Kind::scalar;
-    result.text = input_.substr(position_, length);
-    position_ += length;
-    return result;
-  }
-
-  Json number() {
-    std::size_t start = position_;
-    if (input_[position_] == '-') ++position_;
-    if (position_ >= input_.size()) fail("invalid number");
-    if (input_[position_] == '0') ++position_;
-    else {
-      if (!std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    if (position_ < input_.size() && input_[position_] == '.') {
-      ++position_;
-      if (position_ >= input_.size() ||
-          !std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    if (position_ < input_.size() && (input_[position_] == 'e' || input_[position_] == 'E')) {
-      ++position_;
-      if (position_ < input_.size() && (input_[position_] == '+' || input_[position_] == '-'))
-        ++position_;
-      if (position_ >= input_.size() ||
-          !std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    return scalar_from_range(start);
-  }
-
-  Json scalar_from_range(std::size_t start) {
-    Json result;
-    result.kind = Json::Kind::scalar;
-    result.text = input_.substr(start, position_ - start);
-    return result;
-  }
-
-  std::string string() {
-    if (input_[position_++] != '"') fail("expected string");
-    std::string result;
-    while (position_ < input_.size()) {
-      char c = input_[position_++];
-      if (c == '"') return result;
-      if (c != '\\') {
-        result += c;
-        continue;
-      }
-      if (position_ >= input_.size()) fail("unfinished escape");
-      switch (input_[position_++]) {
-        case '"': result += '"'; break;
-        case '\\': result += '\\'; break;
-        case '/': result += '/'; break;
-        case 'b': result += '\b'; break;
-        case 'f': result += '\f'; break;
-        case 'n': result += '\n'; break;
-        case 'r': result += '\r'; break;
-        case 't': result += '\t'; break;
-        case 'u': {
-          unsigned int codepoint = hex_quad();
-          if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
-            if (position_ + 2 > input_.size() || input_[position_] != '\\' ||
-                input_[position_ + 1] != 'u') fail("invalid Unicode surrogate pair");
-            position_ += 2;
-            unsigned int low = hex_quad();
-            if (low < 0xDC00 || low > 0xDFFF) fail("invalid Unicode surrogate pair");
-            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
-          } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
-            fail("unexpected low Unicode surrogate");
-          }
-          append_utf8(result, codepoint);
-          break;
-        }
-        default: fail("unsupported escape");
-      }
-    }
-    fail("unterminated string");
-  }
-
-  unsigned int hex_quad() {
-    if (position_ + 4 > input_.size()) fail("unfinished Unicode escape");
-    unsigned int value = 0;
-    for (int i = 0; i < 4; ++i) {
-      char c = input_[position_++];
-      value <<= 4;
-      if (c >= '0' && c <= '9') value += static_cast<unsigned int>(c - '0');
-      else if (c >= 'a' && c <= 'f') value += static_cast<unsigned int>(c - 'a' + 10);
-      else if (c >= 'A' && c <= 'F') value += static_cast<unsigned int>(c - 'A' + 10);
-      else fail("invalid Unicode escape");
-    }
-    return value;
-  }
-
-  static void append_utf8(std::string& output, unsigned int codepoint) {
-    if (codepoint <= 0x7F) output += static_cast<char>(codepoint);
-    else if (codepoint <= 0x7FF) {
-      output += static_cast<char>(0xC0 | (codepoint >> 6));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else if (codepoint <= 0xFFFF) {
-      output += static_cast<char>(0xE0 | (codepoint >> 12));
-      output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-      output += static_cast<char>(0xF0 | (codepoint >> 18));
-      output += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
-      output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-  }
-
-  Json array() {
-    increment_depth();
-    ++position_;
-    Json result;
-    result.kind = Json::Kind::array;
-    if (consume(']')) {
-      decrement_depth();
-      return result;
-    }
-    do { result.array.push_back(value()); } while (consume(','));
-    if (!consume(']')) fail("expected ']'");
-    decrement_depth();
-    return result;
-  }
-
-  Json object() {
-    increment_depth();
-    ++position_;
-    Json result;
-    result.kind = Json::Kind::object;
-    if (consume('}')) {
-      decrement_depth();
-      return result;
-    }
-    do {
-      whitespace();
-      if (position_ >= input_.size() || input_[position_] != '"') fail("expected key");
-      std::string key = string();
-      if (!consume(':')) fail("expected ':'");
-      auto insertion = result.object.emplace(std::move(key), value());
-      if (!insertion.second) {
-        fail("duplicate key in JSON object");
-      }
-    } while (consume(','));
-    if (!consume('}')) fail("expected '}'");
-    decrement_depth();
-    return result;
-  }
-};
-
-const Json& required(const Json& object, const std::string& name, Json::Kind kind) {
-  if (object.kind != Json::Kind::object) throw Error(ErrorCategory::validation, "JSON response must be an object");
-  auto item = object.object.find(name);
-  if (item == object.object.end() || item->second.kind != kind)
-    throw Error(ErrorCategory::validation, "JSON response field '" + name + "' is missing or has the wrong type");
-  return item->second;
+/// Convert a cpprestsdk string_t to std::string portably.
+inline std::string to_std(const utility::string_t& s) {
+#ifdef _UTF16_STRINGS
+  return utility::conversions::to_utf8string(s);
+#else
+  return s;
+#endif
 }
 
-std::optional<std::string> optional_string(const Json& object, const std::string& name) {
-  auto item = object.object.find(name);
-  if (item == object.object.end() || item->second.kind == Json::Kind::null_value)
-    return std::nullopt;
-  if (item->second.kind != Json::Kind::string)
-    throw Error(ErrorCategory::validation, "JSON response field '" + name + "' has the wrong type");
-  return item->second.text;
+/// Convert std::string to cpprestsdk string_t portably.
+inline utility::string_t to_sdk(const std::string& s) {
+#ifdef _UTF16_STRINGS
+  return utility::conversions::to_string_t(s);
+#else
+  return s;
+#endif
 }
-
-std::string json_string(const std::string& input) {
-  std::string output;
-  output.reserve(input.size() + 8);
-  output += '"';
-  for (unsigned char c : input) {
-    switch (c) {
-      case '"': output += "\\\""; break;
-      case '\\': output += "\\\\"; break;
-      case '\b': output += "\\b"; break;
-      case '\f': output += "\\f"; break;
-      case '\n': output += "\\n"; break;
-      case '\r': output += "\\r"; break;
-      case '\t': output += "\\t"; break;
-      default:
-        if (c < 0x20) {
-          char buf[7];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
-          output += buf;
-        } else {
-          output += c;
-        }
-    }
-  }
-  output += '"';
-  return output;
-}
-
-std::string request_json(const EnrichmentRequest& request) {
-  return "{\"content\":" + json_string(request.content) +
-         ",\"countryCode\":" + json_string(request.country_code) + "}";
-}
-
-struct WriteContext {
-  std::string* body;
-  std::size_t max_bytes;
-  bool limit_exceeded = false;
-};
-
-size_t write_body(char* data, size_t size, size_t count, void* target) {
-  auto* context = static_cast<WriteContext*>(target);
-  size_t bytes = size * count;
-  if (context->body->size() + bytes > context->max_bytes) {
-    context->limit_exceeded = true;
-    return 0;
-  }
-  context->body->append(data, bytes);
-  return bytes;
-}
-
-class CurlTransport final : public HttpTransport {
- private:
-  long connect_timeout_ms_;
-  long request_timeout_ms_;
-  long low_speed_timeout_seconds_;
-  long low_speed_limit_bytes_per_second_;
-  std::size_t max_response_bytes_;
-  bool allow_insecure_http_;
-
- public:
-  explicit CurlTransport(const ClientConfig& config)
-      : connect_timeout_ms_(config.connect_timeout_ms),
-        request_timeout_ms_(config.request_timeout_ms),
-        low_speed_timeout_seconds_(config.low_speed_timeout_seconds),
-        low_speed_limit_bytes_per_second_(config.low_speed_limit_bytes_per_second),
-        max_response_bytes_(config.max_response_bytes),
-        allow_insecure_http_(config.allow_insecure_http) {}
-
-  HttpResponse send(const HttpRequest& request) override {
-    static std::once_flag init;
-    std::call_once(init, [] {
-      if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-        throw Error(ErrorCategory::transport, "failed to initialize libcurl");
-    });
-    CURL* curl = curl_easy_init();
-    if (!curl) throw Error(ErrorCategory::transport, "failed to create libcurl request");
-
-    auto curl_deleter = [](CURL* c) { if (c) curl_easy_cleanup(c); };
-    std::unique_ptr<CURL, decltype(curl_deleter)> curl_guard(curl, curl_deleter);
-
-    struct curl_slist* headers = nullptr;
-    for (const auto& header : request.headers) {
-      std::string header_str = header.first + ": " + header.second;
-      headers = curl_slist_append(headers, header_str.c_str());
-    }
-    auto headers_deleter = [](curl_slist* h) { if (h) curl_slist_free_all(h); };
-    std::unique_ptr<curl_slist, decltype(headers_deleter)> headers_guard(headers, headers_deleter);
-
-    HttpResponse response;
-    curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(request.body.size()));
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout_ms_);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, request_timeout_ms_);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, low_speed_timeout_seconds_);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, low_speed_limit_bytes_per_second_);
-
-    if (allow_insecure_http_) {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    } else {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    }
-
-    WriteContext context{&response.body, max_response_bytes_, false};
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "xyo-sdk-cpp/1.1.1");
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-
-    CURLcode code = curl_easy_perform(curl);
-    if (code == CURLE_OK) {
-      curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status_code);
-    }
-
-    if (code != CURLE_OK) {
-      std::string error = curl_easy_strerror(code);
-      if (code == CURLE_WRITE_ERROR && context.limit_exceeded) {
-        throw Error(ErrorCategory::transport, "HTTP request failed: response size exceeded maximum limit of " + std::to_string(max_response_bytes_) + " bytes", 0, static_cast<int>(code));
-      }
-      throw Error(ErrorCategory::transport, "HTTP request failed: " + error, 0, static_cast<int>(code));
-    }
-    return response;
-  }
-};
 
 }  // namespace
 
-std::string to_string(EnrichmentCollectionStatus status) {
+// ---------------------------------------------------------------------------
+// Public free functions
+// ---------------------------------------------------------------------------
+
+std::string to_string(EnrichmentStatus status) {
   switch (status) {
-    case EnrichmentCollectionStatus::ready: return "READY";
-    case EnrichmentCollectionStatus::failed: return "FAILED";
-    case EnrichmentCollectionStatus::pending: return "PENDING";
+    case EnrichmentStatus::ready:   return "READY";
+    case EnrichmentStatus::failed:  return "FAILED";
+    case EnrichmentStatus::pending: return "PENDING";
   }
-  throw Error(ErrorCategory::validation, "unknown enrichment collection status");
+  return "UNKNOWN";
 }
 
-Client::Client(ClientConfig config) : config_(std::move(config)) {
-  if (config_.api_key.empty()) throw Error(ErrorCategory::validation, "api_key must not be empty");
-  if (config_.api_base_url.empty()) throw Error(ErrorCategory::validation, "api_base_url must not be empty");
-  while (config_.api_base_url.size() > 1 && config_.api_base_url.back() == '/')
-    config_.api_base_url.pop_back();
-  if (!config_.allow_insecure_http) {
-    if (config_.api_base_url.rfind("https://", 0) != 0) {
-      throw Error(ErrorCategory::validation, "api_base_url must use HTTPS unless allow_insecure_http is enabled");
+// ---------------------------------------------------------------------------
+// ClientConfig
+// ---------------------------------------------------------------------------
+
+ClientConfig::~ClientConfig() noexcept = default;
+
+// ---------------------------------------------------------------------------
+// Error
+// ---------------------------------------------------------------------------
+
+Error::Error(ErrorCategory category, const std::string& message,
+             long http_status_code, int transport_code)
+    : std::runtime_error(message),
+      category_(category),
+      http_status_code_(http_status_code),
+      transport_code_(transport_code) {}
+
+// ---------------------------------------------------------------------------
+// Client::Impl – owns the generated ApiClient and EnrichmentApi.
+// ---------------------------------------------------------------------------
+
+struct Client::Impl {
+  std::shared_ptr<xyo_api::ApiClient>     api_client;
+  std::shared_ptr<xyo_api::EnrichmentApi> enrichment_api;
+
+  explicit Impl(const ClientConfig& cfg) {
+    auto configuration = std::make_shared<xyo_api::ApiConfiguration>();
+    configuration->setBaseUrl(to_sdk(cfg.base_url));
+    // Bearer-token authentication: set the Authorization header.
+    configuration->getDefaultHeaders()[to_sdk("Authorization")] =
+        to_sdk("Bearer " + cfg.api_key);
+
+    if (cfg.request_timeout_ms > 0) {
+      web::http::client::http_client_config http_config;
+      http_config.set_timeout(utility::seconds(std::max<long>(1, cfg.request_timeout_ms / 1000)));
+      configuration->setHttpConfig(http_config);
     }
+
+    api_client = std::make_shared<xyo_api::ApiClient>(configuration);
+    enrichment_api = std::make_shared<xyo_api::EnrichmentApi>(api_client);
   }
-  if (!config_.http_transport) config_.http_transport = std::make_shared<CurlTransport>(config_);
+};
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+Client::Client(ClientConfig config) {
+  if (config.api_key.empty()) {
+    throw Error(ErrorCategory::validation, "api_key must not be empty");
+  }
+  impl_ = std::make_unique<Impl>(config);
 }
 
-Client::~Client() noexcept {
-  // config_.api_key is wiped by ClientConfig::~ClientConfig()
-}
+Client::Client(Client&&) noexcept = default;
+Client& Client::operator=(Client&&) noexcept = default;
+Client::~Client() noexcept = default;
 
-HttpResponse Client::post(const std::string& path, const std::string& body) const {
-  HttpRequest request{"POST", config_.api_base_url + path,
-                      {{"Content-Type", "application/json"}, {"Accept", "application/json"},
-                       {"Authorization", "Bearer " + config_.api_key}}, body};
-  HttpResponse response;
-  int attempts = 0;
-  int max_attempts = (std::max)(1, config_.max_retries + 1);
+// ---------------------------------------------------------------------------
+// enrichTransaction – single transaction, synchronous.
+// ---------------------------------------------------------------------------
+EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) const {
+  auto req = std::make_shared<xyo_model::EnrichmentRequest>();
+  req->setContent(to_sdk(request.content));
+  req->setCountryCode(to_sdk(request.country_code));
 
-  while (attempts < max_attempts) {
-    response = config_.http_transport->send(request);
-    
-    if (response.status_code == 429 || response.status_code >= 500) {
-      attempts++;
-      if (attempts < max_attempts) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> jitter(0, 100);
-        long delay_ms = (1L << attempts) * 100 + jitter(gen);
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-        continue;
-      }
-    }
-    break;
+  std::shared_ptr<xyo_model::EnrichmentResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->enrichTransaction(boost::optional<std::shared_ptr<xyo_model::EnrichmentRequest>>(req))
+               .get();  // block until the async pplx::task resolves
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from enrichTransaction: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from enrichTransaction: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from enrichTransaction: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
   }
 
-  if (response.status_code != 200) {
-    std::string error_msg = "XYO API returned status code " + std::to_string(response.status_code);
-    if (!response.body.empty()) {
-      error_msg += ": " + response.body;
-    }
-    throw Error(ErrorCategory::http, error_msg, response.status_code);
+  if (!resp) {
+    throw Error(ErrorCategory::parsing, "enrichTransaction: null response");
   }
-  return response;
+
+  EnrichmentResponse out;
+  out.merchant    = to_std(resp->getMerchant());
+  out.description = to_std(resp->getDescription());
+
+  for (const auto& cat : resp->getCategories()) {
+    out.categories.push_back(to_std(cat));
+  }
+
+  out.logo = to_std(resp->getLogo());
+
+  if (resp->locationIsSet()) {
+    out.location = to_std(resp->getLocation());
+  }
+  if (resp->addressIsSet()) {
+    out.address = to_std(resp->getAddress());
+  }
+
+  return out;
 }
 
-EnrichmentResponse Client::enrich_transaction(const EnrichmentRequest& request) const {
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transaction", request_json(request)).body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  EnrichmentResponse response;
-  response.merchant = required(root, "merchant", Json::Kind::string).text;
-  response.description = required(root, "description", Json::Kind::string).text;
-  response.logo = required(root, "logo", Json::Kind::string).text;
-  for (const auto& category : required(root, "categories", Json::Kind::array).array) {
-    if (category.kind != Json::Kind::string) throw Error(ErrorCategory::validation, "categories must contain strings");
-    response.categories.push_back(category.text);
-  }
-  response.location = optional_string(root, "location");
-  response.address = optional_string(root, "address");
-  return response;
-}
-
-EnrichTransactionCollectionResponse Client::enrich_transaction_collection(
+// ---------------------------------------------------------------------------
+// enrichTransactions – bulk, async (returns a job handle).
+// ---------------------------------------------------------------------------
+BulkEnrichmentResponse Client::enrichTransactions(
     const std::vector<EnrichmentRequest>& requests) const {
-  if (requests.size() > config_.max_collection_size) {
-    throw Error(ErrorCategory::validation, "collection size exceeds max_collection_size limit of " + std::to_string(config_.max_collection_size));
+
+  if (requests.empty()) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: request list must not be empty");
   }
-  std::string body = "[";
-  for (std::size_t i = 0; i < requests.size(); ++i) {
-    if (i) body += ',';
-    body += request_json(requests[i]);
+
+  std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>> items;
+  items.reserve(requests.size());
+  for (const auto& r : requests) {
+    auto item = std::make_shared<xyo_model::EnrichTransactions_request_inner>();
+    item->setContent(to_sdk(r.content));
+    item->setCountryCode(to_sdk(r.country_code));
+    items.push_back(std::move(item));
   }
-  body += ']';
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transactions", body).body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  return {required(root, "id", Json::Kind::string).text,
-          required(root, "link", Json::Kind::string).text};
+
+  std::shared_ptr<xyo_model::EnrichTransactionCollectionResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->enrichTransactions(
+                   boost::none,  // x-api-user header (optional, unused)
+                   boost::optional<std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>>>(items))
+               .get();
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from enrichTransactions: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from enrichTransactions: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from enrichTransactions: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
+  }
+
+  if (!resp) {
+    throw Error(ErrorCategory::parsing, "enrichTransactions: null response");
+  }
+
+  return BulkEnrichmentResponse{
+      to_std(resp->getId()),
+      to_std(resp->getLink()),
+  };
 }
 
-EnrichmentCollectionStatus Client::enrich_transaction_collection_status(
-    const std::string& id) const {
-  if (id.empty()) throw Error(ErrorCategory::validation, "id must not be empty");
-  for (char c : id) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
-      throw Error(ErrorCategory::validation, "invalid transaction collection ID format");
-    }
+// ---------------------------------------------------------------------------
+// getEnrichmentStatus – poll the status of an async bulk job.
+// ---------------------------------------------------------------------------
+EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
+  if (id.empty()) {
+    throw Error(ErrorCategory::validation,
+                "getEnrichmentStatus: id must not be empty");
   }
-  // NOTE: XYO API status endpoint requires a POST request with an empty body
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transactions/status/" + id, "").body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  const std::string& status = required(root, "status", Json::Kind::string).text;
-  if (status == "READY") return EnrichmentCollectionStatus::ready;
-  if (status == "FAILED") return EnrichmentCollectionStatus::failed;
-  if (status == "PENDING") return EnrichmentCollectionStatus::pending;
-  throw Error(ErrorCategory::validation, "unknown enrichment collection status: " + status);
-}
 
-Error::Error(ErrorCategory category, const std::string& message, long http_status_code, int transport_code)
-    : std::runtime_error(message), category_(category), http_status_code_(http_status_code), transport_code_(transport_code) {}
+  std::shared_ptr<xyo_model::EnrichmentCollectionStatusResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->getEnrichmentStatus(
+                   to_sdk(id),
+                   boost::none)  // x-api-user header (optional, unused)
+               .get();
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from getEnrichmentStatus: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from getEnrichmentStatus: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from getEnrichmentStatus: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
+  }
 
-ClientConfig::~ClientConfig() noexcept {
-  std::fill(api_key.begin(), api_key.end(), '\0');
+  if (!resp || !resp->statusIsSet()) {
+    throw Error(ErrorCategory::parsing, "getEnrichmentStatus: null response");
+  }
+
+  switch (resp->getStatus()) {
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::READY:
+      return EnrichmentStatus::ready;
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::FAILED:
+      return EnrichmentStatus::failed;
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::PENDING:
+      return EnrichmentStatus::pending;
+  }
+
+  throw Error(ErrorCategory::parsing,
+              "getEnrichmentStatus: unrecognised status value");
 }
 
 }  // namespace xyo

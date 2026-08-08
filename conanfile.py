@@ -5,7 +5,7 @@ import os
 
 class XyoSdkCppConan(ConanFile):
     name = "xyo-sdk-cpp"
-    version = "1.1.1"
+    version = "2.0.0"
     license = "BSD-3-Clause"
     author = "Syniol Limited"
     url = "https://github.com/xyo-financial/sdk-cpp"
@@ -20,7 +20,7 @@ class XyoSdkCppConan(ConanFile):
         "shared": False,
         "fPIC": True,
     }
-    exports_sources = "CMakeLists.txt", "LICENSE", "include/*", "src/*", "cmake/*", "tests/*"
+    exports_sources = "CMakeLists.txt", "LICENSE", "include/*", "src/*", "openapi/*", "cmake/*", "tests/*"
 
     def config_options(self):
         if self.settings.os == "Windows":
@@ -31,7 +31,7 @@ class XyoSdkCppConan(ConanFile):
             self.options.rm_safe("fPIC")
 
     def requirements(self):
-        self.requires("libcurl/[>=7.78.0 <9.0.0]")
+        self.requires("cpprestsdk/2.10.18")
 
 
     def generate(self):

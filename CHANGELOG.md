@@ -5,6 +5,12 @@ All notable changes to the XYO C++ SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-08-09
+
+### Changed
+- Bumped SDK version to 2.0.0 across CMake, Conan, vcpkg, and documentation.
+- Standardized project name in CMake to `XYOSDK`.
+
 ## [1.1.1] - 2026-08-06
 
 ### Changed

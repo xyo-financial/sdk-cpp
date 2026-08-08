@@ -1,0 +1,68 @@
+name: Regenerate C++ SDK from OpenAPI spec
+
+on:
+  push:
+    paths:
+      - 'specs/openapi.yml'
+      - 'cpp/.github/workflows/generate.yml'
+  pull_request:
+    paths:
+      - 'specs/openapi.yml'
+      - 'cpp/.github/workflows/generate.yml'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    name: Generate & Build C++ SDK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js (for openapi-generator-cli)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install C++ build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake \
+            build-essential \
+            libcpprest-dev \
+            libboost-all-dev \
+            libssl-dev
+
+      - name: Generate OpenAPI C++ client (cpp-restsdk)
+        working-directory: ${{ github.workspace }}
+        run: |
+          npx -y @openapitools/openapi-generator-cli generate \
+            -i specs/openapi.yml \
+            -g cpp-restsdk \
+            -o cpp/openapi \
+            --additional-properties=packageName=XYOSDK,apiPackage=xyo_api,modelPackage=xyo_model
+
+      - name: Configure CMake
+        working-directory: cpp
+        run: cmake -B build -S . -DXYO_BUILD_TESTS=ON
+
+      - name: Build SDK
+        working-directory: cpp
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        working-directory: cpp
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Commit regenerated openapi/ files
+        # Only auto-commit on direct pushes to main (not PRs).
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add cpp/openapi
+          git diff --quiet && git diff --staged --quiet \
+            || git commit -m "auto: regenerate C++ SDK openapi client from openapi.yml [skip ci]"
+          git push

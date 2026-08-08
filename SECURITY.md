@@ -6,8 +6,8 @@ Only the latest stable release of the C++ SDK receives security updates.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.1.1   | Yes       |
-| < 1.1.1 | No        |
+| 2.0.0   | Yes       |
+| < 2.0.0 | No        |
 
 ## Reporting a Vulnerability
 
