@@ -131,6 +131,18 @@ class XYO_SDK_API Client {
   /// Poll the status of an async bulk enrichment job.
   EnrichmentStatus getEnrichmentStatus(const std::string& id) const;
 
+  /// Download and decode a completed enrichment collection archive.
+  ///
+  /// @param downloadUrl  The `link` field returned by enrichTransactions().
+  ///                     The server responds with an application/gzip
+  ///                     (tar.gz) body; each tar entry contains one
+  ///                     JSON-encoded EnrichmentResponse.
+  /// @returns            A vector of all EnrichmentResponse records found
+  ///                     inside the archive.
+  /// @throws xyo::Error  On HTTP errors, I/O failures, or parse failures.
+  std::vector<EnrichmentResponse>
+  downloadEnrichmentCollection(const std::string& downloadUrl) const;
+
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

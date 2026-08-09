@@ -33,6 +33,7 @@ Institutional-grade modern C++17 SDK for connecting to the **[XYO.Financial](htt
   - `cpprestsdk` (2.10+)
   - `Boost` (1.70+)
   - `OpenSSL` (1.1+ or 3.0+)
+  - `ZLIB` (1.2.8+)
 
 ---
 
@@ -171,7 +172,43 @@ void pollJobStatus(const xyo::Client& client, const std::string& jobId) {
 }
 ```
 
-### 4. Structured Error Handling (`xyo::Error`)
+### 4. Downloading Bulk Results Archive (`downloadEnrichmentCollection`)
+
+Once a bulk enrichment job is `ready`, fetch and unpack the resulting compressed archive using `downloadEnrichmentCollection`. The SDK performs an HTTP GET request with Bearer authentication and `Accept: application/gzip`, decompresses the `.tar.gz` stream, and decodes each JSON tar entry into domain `xyo::EnrichmentResponse` models:
+
+```cpp
+#include <xyo/client.hpp>
+#include <iostream>
+#include <vector>
+
+void downloadResults(const xyo::Client& client, const std::string& downloadUrl) {
+  // downloadUrl is the `link` URL returned from BulkEnrichmentResponse
+  std::vector<xyo::EnrichmentResponse> records =
+      client.downloadEnrichmentCollection(downloadUrl);
+
+  std::cout << "Downloaded " << records.size() << " enriched transactions:\n";
+
+  for (const auto& record : records) {
+    std::cout << "----------------------------------------\n";
+    std::cout << "Merchant:    " << record.merchant << "\n";
+    std::cout << "Description: " << record.description << "\n";
+    std::cout << "Categories:  ";
+    for (const auto& cat : record.categories) {
+      std::cout << "[" << cat << "] ";
+    }
+    std::cout << "\n";
+
+    if (record.location) {
+      std::cout << "Location:    " << *record.location << "\n";
+    }
+    if (record.address) {
+      std::cout << "Address:     " << *record.address << "\n";
+    }
+  }
+}
+```
+
+### 5. Structured Error Handling (`xyo::Error`)
 
 The SDK throws `xyo::Error` (derived from `std::runtime_error`) on validation failures, transport failures, HTTP errors, or response parsing errors:
 

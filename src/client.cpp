@@ -20,11 +20,17 @@
 #include "XYOSDK/model/EnrichmentCollectionStatusResponse.h"
 
 #include <cpprest/details/basic_types.h>
+#include <cpprest/http_client.h>
+#include <cpprest/json.h>
 #include <boost/optional.hpp>
 #include <boost/none.hpp>
+#include <zlib.h>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace xyo {
 
@@ -272,6 +278,244 @@ EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
 
   throw Error(ErrorCategory::parsing,
               "getEnrichmentStatus: unrecognised status value");
+}
+
+// ---------------------------------------------------------------------------
+// downloadEnrichmentCollection – GET tar.gz, decompress, parse JSON entries.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Decompress a gzip byte blob into a std::string using zlib.
+std::string gunzip(const std::vector<uint8_t>& compressed) {
+  if (compressed.empty()) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: empty compressed data");
+  }
+
+  // inflateInit2 with windowBits=31 enables automatic gzip header detection.
+  z_stream zs{};
+  if (inflateInit2(&zs, 31) != Z_OK) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: zlib inflateInit2 failed");
+  }
+
+  zs.next_in  = const_cast<Bytef*>(compressed.data());
+  zs.avail_in = static_cast<uInt>(compressed.size());
+
+  std::string out;
+  out.reserve(compressed.size() * 4);
+
+  std::vector<char> buf(65536);
+  int ret = Z_OK;
+  while (ret != Z_STREAM_END) {
+    zs.next_out  = reinterpret_cast<Bytef*>(buf.data());
+    zs.avail_out = static_cast<uInt>(buf.size());
+    ret = inflate(&zs, Z_NO_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) {
+      inflateEnd(&zs);
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: gzip decompression failed");
+    }
+    out.append(buf.data(), buf.size() - zs.avail_out);
+  }
+
+  inflateEnd(&zs);
+  return out;
+}
+
+/// Walk POSIX ustar/GNU tar blocks and return each regular-file's content.
+/// Each block is 512 bytes; the header occupies block 0, data follows.
+std::vector<std::string> parse_tar_entries(const std::string& tar_bytes) {
+  std::vector<std::string> entries;
+  const std::size_t total = tar_bytes.size();
+  std::size_t offset = 0;
+
+  while (offset + 512 <= total) {
+    const char* hdr = tar_bytes.data() + offset;
+
+    // Two consecutive all-zero blocks mark end-of-archive.
+    bool all_zero = true;
+    for (int i = 0; i < 512 && all_zero; ++i) {
+      if (hdr[i] != '\0') all_zero = false;
+    }
+    if (all_zero) break;
+
+    // Filename is at offset 0 (100 bytes, NUL-padded).
+    // Typeflag is at offset 156: '0' or '\0' = regular file.
+    char typeflag = hdr[156];
+
+    // File size is stored as an octal ASCII string at offset 124 (12 bytes).
+    char size_field[13] = {};
+    std::memcpy(size_field, hdr + 124, 12);
+    std::size_t file_size = static_cast<std::size_t>(std::strtoull(size_field, nullptr, 8));
+
+    offset += 512;  // advance past header block
+
+    if ((typeflag == '0' || typeflag == '\0') && file_size > 0) {
+      if (offset + file_size > total) {
+        // Truncated archive.
+        throw xyo::Error(xyo::ErrorCategory::parsing,
+                         "downloadEnrichmentCollection: truncated tar archive");
+      }
+      entries.emplace_back(tar_bytes.data() + offset, file_size);
+    }
+
+    // Round file_size up to the next 512-byte boundary.
+    std::size_t padded = (file_size + 511) & ~static_cast<std::size_t>(511);
+    offset += padded;
+  }
+  return entries;
+}
+
+/// Parse a single JSON-encoded EnrichmentResponse entry string.
+xyo::EnrichmentResponse parse_enrichment_json(const std::string& json_str) {
+  web::json::value jv;
+  try {
+    jv = web::json::value::parse(utility::conversions::to_string_t(json_str));
+  } catch (const std::exception& e) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     std::string("downloadEnrichmentCollection: JSON parse error: ") + e.what());
+  }
+
+  auto get_str = [&](const char* key) -> std::string {
+    auto k = utility::conversions::to_string_t(key);
+    if (!jv.has_field(k) || !jv.at(k).is_string()) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       std::string("downloadEnrichmentCollection: missing field: ") + key);
+    }
+    return utility::conversions::to_utf8string(jv.at(k).as_string());
+  };
+
+  xyo::EnrichmentResponse out;
+  out.merchant    = get_str("merchant");
+  out.description = get_str("description");
+  out.logo        = get_str("logo");
+
+  auto cats_key = utility::conversions::to_string_t("categories");
+  if (jv.has_field(cats_key) && jv.at(cats_key).is_array()) {
+    for (const auto& cat : jv.at(cats_key).as_array()) {
+      if (cat.is_string()) {
+        out.categories.push_back(utility::conversions::to_utf8string(cat.as_string()));
+      }
+    }
+  }
+
+  auto loc_key = utility::conversions::to_string_t("location");
+  if (jv.has_field(loc_key) && jv.at(loc_key).is_string()) {
+    out.location = utility::conversions::to_utf8string(jv.at(loc_key).as_string());
+  }
+
+  auto addr_key = utility::conversions::to_string_t("address");
+  if (jv.has_field(addr_key) && jv.at(addr_key).is_string()) {
+    out.address = utility::conversions::to_utf8string(jv.at(addr_key).as_string());
+  }
+
+  return out;
+}
+
+}  // anonymous namespace
+
+std::vector<EnrichmentResponse>
+Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
+  if (downloadUrl.empty()) {
+    throw Error(ErrorCategory::validation,
+                "downloadEnrichmentCollection: downloadUrl must not be empty");
+  }
+
+  auto api_cfg = impl_->api_client->getConfiguration();
+  std::string full_url = downloadUrl;
+  if (downloadUrl.rfind("http://", 0) != 0 && downloadUrl.rfind("https://", 0) != 0) {
+    std::string base = to_std(api_cfg->getBaseUrl());
+    if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
+      full_url = base + full_url.substr(1);
+    } else if (!base.empty() && base.back() != '/' && !full_url.empty() && full_url.front() != '/') {
+      full_url = base + "/" + full_url;
+    } else {
+      full_url = base + full_url;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Issue GET request with Bearer auth and Accept: application/gzip.
+  // -------------------------------------------------------------------------
+  web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
+
+  web::http::client::http_client http_client(
+      to_sdk(full_url), http_cfg);
+
+  web::http::http_request get_req(web::http::methods::GET);
+  // Copy authorization header from the shared ApiConfiguration defaults.
+  const auto& default_headers = api_cfg->getDefaultHeaders();
+  auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
+  if (auth_it != default_headers.end()) {
+    get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
+  }
+  get_req.headers()[utility::conversions::to_string_t("Accept")] =
+      utility::conversions::to_string_t("application/gzip");
+
+  web::http::http_response response;
+  try {
+    response = http_client.request(get_req).get();
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport,
+                std::string("downloadEnrichmentCollection: request failed: ") + e.what());
+  }
+
+  const auto status = response.status_code();
+  if (status != web::http::status_codes::OK) {
+    throw Error(ErrorCategory::http,
+                "downloadEnrichmentCollection: HTTP error",
+                static_cast<long>(status));
+  }
+
+  // -------------------------------------------------------------------------
+  // Read compressed body into a byte vector.
+  // -------------------------------------------------------------------------
+  std::vector<uint8_t> compressed_body;
+  try {
+    auto body_task = response.extract_vector();
+    compressed_body = body_task.get();
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport,
+                std::string("downloadEnrichmentCollection: failed to read body: ") + e.what());
+  }
+
+  if (compressed_body.empty()) {
+    throw Error(ErrorCategory::parsing,
+                "downloadEnrichmentCollection: empty response body");
+  }
+
+  // -------------------------------------------------------------------------
+  // Decompress gzip, parse tar, decode each JSON entry.
+  // -------------------------------------------------------------------------
+  std::string tar_bytes;
+  try {
+    tar_bytes = gunzip(compressed_body);
+  } catch (const Error&) {
+    throw;  // already tagged with correct category
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::parsing,
+                std::string("downloadEnrichmentCollection: decompression error: ") + e.what());
+  }
+
+  std::vector<std::string> raw_entries;
+  try {
+    raw_entries = parse_tar_entries(tar_bytes);
+  } catch (const Error&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::parsing,
+                std::string("downloadEnrichmentCollection: tar parsing error: ") + e.what());
+  }
+
+  std::vector<EnrichmentResponse> results;
+  results.reserve(raw_entries.size());
+  for (const auto& entry : raw_entries) {
+    results.push_back(parse_enrichment_json(entry));
+  }
+
+  return results;
 }
 
 }  // namespace xyo

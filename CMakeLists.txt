@@ -11,6 +11,7 @@ include(CMakePackageConfigHelpers)
 # ---------------------------------------------------------------------------
 find_package(cpprestsdk REQUIRED)
 find_package(Boost REQUIRED)
+find_package(ZLIB REQUIRED)
 
 # ---------------------------------------------------------------------------
 # OpenAPI-generated sources (output of: npx @openapitools/openapi-generator-cli
@@ -56,6 +57,7 @@ target_link_libraries(xyo_sdk
   PUBLIC
     cpprestsdk::cpprest
     Boost::boost
+    ZLIB::ZLIB
 )
 
 set_target_properties(xyo_sdk PROPERTIES

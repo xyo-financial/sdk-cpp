@@ -11,14 +11,18 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <zlib.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -77,6 +81,7 @@ class MockHttpServer {
     std::string method;
     std::string path;
     std::string authorization_header;
+    std::string accept_header;
     std::string content_type;
     std::string body;
   };
@@ -94,6 +99,10 @@ class MockHttpServer {
       if (req.headers().has(utility::conversions::to_string_t("Authorization"))) {
         rec.authorization_header = utility::conversions::to_utf8string(
             req.headers()[utility::conversions::to_string_t("Authorization")]);
+      }
+      if (req.headers().has(utility::conversions::to_string_t("Accept"))) {
+        rec.accept_header = utility::conversions::to_utf8string(
+            req.headers()[utility::conversions::to_string_t("Accept")]);
       }
       if (req.headers().has(utility::conversions::to_string_t("Content-Type"))) {
         rec.content_type = utility::conversions::to_utf8string(
@@ -157,6 +166,87 @@ web::http::http_response json_response(web::http::status_code status, const std:
   resp.headers().set_content_type(utility::conversions::to_string_t("application/json"));
   resp.set_body(utility::conversions::to_string_t(json_str));
   return resp;
+}
+
+web::http::http_response gzip_response(web::http::status_code status, const std::vector<uint8_t>& data) {
+  web::http::http_response resp(status);
+  resp.headers().set_content_type(utility::conversions::to_string_t("application/gzip"));
+  resp.set_body(data);
+  return resp;
+}
+
+/// Helper to create a POSIX ustar tar archive in-memory
+std::string create_tar_archive(const std::vector<std::pair<std::string, std::string>>& files) {
+  std::string tar;
+  for (const auto& item : files) {
+    const std::string& name = item.first;
+    const std::string& content = item.second;
+
+    char hdr[512] = {};
+    // Filename (offset 0, 100 bytes)
+    std::strncpy(hdr, name.c_str(), std::min<std::size_t>(name.size(), 99));
+    // File mode (offset 100, 8 bytes)
+    std::snprintf(hdr + 100, 8, "%07o", 0644);
+    // UID (offset 108, 8 bytes)
+    std::snprintf(hdr + 108, 8, "%07o", 0);
+    // GID (offset 116, 8 bytes)
+    std::snprintf(hdr + 116, 8, "%07o", 0);
+    // File size in octal (offset 124, 12 bytes)
+    std::snprintf(hdr + 124, 12, "%011zo", content.size());
+    // Mtime (offset 136, 12 bytes)
+    std::snprintf(hdr + 136, 12, "%011lo", 0L);
+    // Typeflag (offset 156): '0' for regular file
+    hdr[156] = '0';
+    // Magic (offset 257, 6 bytes): "ustar\0" or "ustar "
+    std::memcpy(hdr + 257, "ustar ", 6);
+    // Version (offset 263, 2 bytes): " \0"
+    std::memcpy(hdr + 263, " \0", 2);
+
+    // Calculate checksum treating checksum field (148..155) as 8 spaces
+    std::memset(hdr + 148, ' ', 8);
+    unsigned int checksum = 0;
+    for (int i = 0; i < 512; ++i) {
+      checksum += static_cast<unsigned char>(hdr[i]);
+    }
+    std::snprintf(hdr + 148, 8, "%06o", checksum);
+
+    tar.append(hdr, 512);
+    tar.append(content);
+    std::size_t pad = (512 - (content.size() % 512)) % 512;
+    if (pad > 0) {
+      tar.append(pad, '\0');
+    }
+  }
+  // Two 512-byte zero blocks marking end of archive
+  tar.append(1024, '\0');
+  return tar;
+}
+
+/// Helper to compress data using gzip (windowBits = 31)
+std::vector<uint8_t> gzip_compress(const std::string& data) {
+  z_stream zs{};
+  if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+    throw std::runtime_error("deflateInit2 failed");
+  }
+
+  zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+  zs.avail_in = static_cast<uInt>(data.size());
+
+  std::vector<uint8_t> out;
+  std::vector<uint8_t> buf(65536);
+  int ret = Z_OK;
+  do {
+    zs.next_out = buf.data();
+    zs.avail_out = static_cast<uInt>(buf.size());
+    ret = deflate(&zs, Z_FINISH);
+    out.insert(out.end(), buf.data(), buf.data() + (buf.size() - zs.avail_out));
+  } while (ret == Z_OK);
+
+  deflateEnd(&zs);
+  if (ret != Z_STREAM_END) {
+    throw std::runtime_error("deflate failed");
+  }
+  return out;
 }
 
 }  // namespace
@@ -460,7 +550,7 @@ int main() {
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       return json_response(web::http::status_codes::OK, R"({"status": "UNKNOWN_CUSTOM_STATE"})");
     });
-    expects_error(xyo::ErrorCategory::parsing, "unrecognised status value", [&] {
+    expects_error(xyo::ErrorCategory::parsing, "Parsing error from getEnrichmentStatus", [&] {
       client.getEnrichmentStatus("job-bulk-98765");
     });
 
@@ -493,6 +583,219 @@ int main() {
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
       TEST_ASSERT(e.what() != nullptr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 9. downloadEnrichmentCollection - Valid tar.gz download and parsing
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] downloadEnrichmentCollection valid tar.gz responses\n";
+    std::string json1 = R"({
+      "merchant": "Uber",
+      "description": "Ridesharing and mobility platform",
+      "categories": ["Transportation", "Rideshare"],
+      "logo": "data:image/png;base64,iVBORw0KGgoAAA...",
+      "location": "San Francisco, CA",
+      "address": "1455 Market St"
+    })";
+
+    std::string json2 = R"({
+      "merchant": "Netflix",
+      "description": "Subscription video streaming service",
+      "categories": ["Entertainment", "Streaming"],
+      "logo": "data:image/png;base64,netflixlogo..."
+    })";
+
+    std::string json3 = R"({
+      "merchant": "Tesco Stores",
+      "description": "Supermarket and retail chain",
+      "categories": ["Groceries", "Food & Drink"],
+      "logo": "data:image/png;base64,tescologo...",
+      "location": "Welwyn Garden City, UK",
+      "address": null
+    })";
+
+    std::string tar = create_tar_archive({
+        {"result_001.json", json1},
+        {"result_002.json", json2},
+        {"result_003.json", json3},
+    });
+    std::vector<uint8_t> gzipped = gzip_compress(tar);
+
+    server.clear_requests();
+    server.set_handler([&gzipped](const MockHttpServer::RecordedRequest& req) {
+      TEST_ASSERT(req.method == "GET");
+      TEST_ASSERT(req.path == "/downloads/results-98765.tar.gz");
+      TEST_ASSERT(req.authorization_header == "Bearer xyo-secret-test-bearer-token-12345");
+      TEST_ASSERT(req.accept_header == "application/gzip");
+      return gzip_response(web::http::status_codes::OK, gzipped);
+    });
+
+    // 9a. Full URL download
+    std::string download_url = server.base_url() + "/downloads/results-98765.tar.gz";
+    std::vector<xyo::EnrichmentResponse> items = client.downloadEnrichmentCollection(download_url);
+    TEST_ASSERT(items.size() == 3);
+
+    // Entry 1: Full payload
+    TEST_ASSERT(items[0].merchant == "Uber");
+    TEST_ASSERT(items[0].description == "Ridesharing and mobility platform");
+    TEST_ASSERT(items[0].categories.size() == 2);
+    TEST_ASSERT(items[0].categories[0] == "Transportation");
+    TEST_ASSERT(items[0].categories[1] == "Rideshare");
+    TEST_ASSERT(items[0].logo == "data:image/png;base64,iVBORw0KGgoAAA...");
+    TEST_ASSERT(items[0].location.has_value());
+    TEST_ASSERT(items[0].location.value() == "San Francisco, CA");
+    TEST_ASSERT(items[0].address.has_value());
+    TEST_ASSERT(items[0].address.value() == "1455 Market St");
+
+    // Entry 2: Optional location and address absent
+    TEST_ASSERT(items[1].merchant == "Netflix");
+    TEST_ASSERT(items[1].description == "Subscription video streaming service");
+    TEST_ASSERT(items[1].categories.size() == 2);
+    TEST_ASSERT(items[1].categories[0] == "Entertainment");
+    TEST_ASSERT(items[1].categories[1] == "Streaming");
+    TEST_ASSERT(items[1].logo == "data:image/png;base64,netflixlogo...");
+    TEST_ASSERT(!items[1].location.has_value());
+    TEST_ASSERT(!items[1].address.has_value());
+
+    // Entry 3: Location present, address null
+    TEST_ASSERT(items[2].merchant == "Tesco Stores");
+    TEST_ASSERT(items[2].description == "Supermarket and retail chain");
+    TEST_ASSERT(items[2].categories.size() == 2);
+    TEST_ASSERT(items[2].categories[0] == "Groceries");
+    TEST_ASSERT(items[2].categories[1] == "Food & Drink");
+    TEST_ASSERT(items[2].logo == "data:image/png;base64,tescologo...");
+    TEST_ASSERT(items[2].location.has_value());
+    TEST_ASSERT(items[2].location.value() == "Welwyn Garden City, UK");
+    TEST_ASSERT(!items[2].address.has_value());
+
+    // 9b. Relative URL resolution download
+    std::vector<xyo::EnrichmentResponse> items_rel =
+        client.downloadEnrichmentCollection("/downloads/results-98765.tar.gz");
+    TEST_ASSERT(items_rel.size() == 3);
+    TEST_ASSERT(items_rel[0].merchant == "Uber");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 10. downloadEnrichmentCollection - Validation and error handling
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] downloadEnrichmentCollection validation and error handling\n";
+
+    // 10a. Empty URL validation error
+    expects_error(xyo::ErrorCategory::validation,
+                  "downloadEnrichmentCollection: downloadUrl must not be empty", [&] {
+                    client.downloadEnrichmentCollection("");
+                  });
+
+    // 10b. HTTP 401 Unauthorized
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(web::http::status_codes::Unauthorized, R"({"error": "Unauthorized"})");
+    });
+    try {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/results-98765.tar.gz");
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
+      TEST_ASSERT(e.http_status_code() == 401);
+    }
+
+    // 10c. HTTP 404 Not Found
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(web::http::status_codes::NotFound, R"({"error": "Archive not found"})");
+    });
+    try {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/nonexistent.tar.gz");
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
+      TEST_ASSERT(e.http_status_code() == 404);
+    }
+
+    // 10d. HTTP 500 Internal Server Error
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(web::http::status_codes::InternalError, R"({"error": "Internal server error"})");
+    });
+    try {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/error.tar.gz");
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
+      TEST_ASSERT(e.http_status_code() == 500);
+    }
+
+    // 10e. Empty body parsing error
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      web::http::http_response resp(web::http::status_codes::OK);
+      resp.headers().set_content_type(utility::conversions::to_string_t("application/gzip"));
+      resp.set_body(std::vector<uint8_t>{});
+      return resp;
+    });
+    expects_error(xyo::ErrorCategory::parsing, "empty response body", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/empty.tar.gz");
+    });
+
+    // 10f. Corrupted gzip data
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string corrupt = "this is not valid gzip compressed data at all";
+      std::vector<uint8_t> data(corrupt.begin(), corrupt.end());
+      return gzip_response(web::http::status_codes::OK, data);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "gzip decompression failed", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/corrupted.tar.gz");
+    });
+
+    // 10g. Corrupted / truncated tar archive
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      char hdr[512] = {};
+      std::strncpy(hdr, "entry.json", 100);
+      std::snprintf(hdr + 100, 8, "%07o", 0644);
+      std::snprintf(hdr + 124, 12, "%011zo", static_cast<std::size_t>(1000));
+      hdr[156] = '0';
+      std::memset(hdr + 148, ' ', 8);
+      unsigned int checksum = 0;
+      for (int i = 0; i < 512; ++i) checksum += static_cast<unsigned char>(hdr[i]);
+      std::snprintf(hdr + 148, 8, "%06o", checksum);
+
+      std::string partial_tar(hdr, 512);
+      partial_tar.append(100, 'x'); // only 100 bytes of 1000 bytes declared
+      auto gz = gzip_compress(partial_tar);
+      return gzip_response(web::http::status_codes::OK, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "truncated tar archive", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/truncated.tar.gz");
+    });
+
+    // 10h. Invalid JSON inside tar archive
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string bad_json = "{ merchant: invalid json }";
+      std::string tar = create_tar_archive({{"bad.json", bad_json}});
+      auto gz = gzip_compress(tar);
+      return gzip_response(web::http::status_codes::OK, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "JSON parse error", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/badjson.tar.gz");
+    });
+
+    // 10i. Missing required field in JSON entry
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string incomplete_json = R"({"description": "no merchant"})";
+      std::string tar = create_tar_archive({{"incomplete.json", incomplete_json}});
+      auto gz = gzip_compress(tar);
+      return gzip_response(web::http::status_codes::OK, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "missing field: merchant", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
+    });
+
+    // 10j. Transport error for unreachable host
+    int unreachable_port = get_free_port();
+    try {
+      client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
     }
   }
 
