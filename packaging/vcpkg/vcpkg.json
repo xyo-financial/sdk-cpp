@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "XYO SDK for transaction enrichment API",
   "homepage": "https://github.com/xyo-financial/sdk-cpp",
-  "license": "BSD-3-Clause",
+  "license": "Apache-2.0",
   "dependencies": [
     "cpprestsdk",
     "boost"

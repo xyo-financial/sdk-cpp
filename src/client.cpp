@@ -1,5 +1,5 @@
-// Copyright (c) 2025 Syniol Limited
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright 2026 Syniol Limited
+// SPDX-License-Identifier: Apache-2.0
 
 // ---------------------------------------------------------------------------
 // XYO C++ SDK – thin wrapper over the OpenAPI-generated cpp-restsdk client.

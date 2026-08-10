@@ -3,7 +3,7 @@
 [![CI](https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml)
 [![Release](https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg)](https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://en.cppreference.com/w/cpp/17)
-[![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 <p align="center">
     <a href="https://xyo.financial" target="blank"><img width="420" alt="C++ Mascot for XYO.Financial" src="docs/mascot.png" /></a>
@@ -378,6 +378,6 @@ ctest --test-dir build --output-on-failure
 
 ## License
 
-This project is licensed under the **BSD 3-Clause License** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Apache License, Version 2.0** - see the [LICENSE](LICENSE) file for details.
 
 Copyright &copy; 2025–2026 Syniol Limited. All rights reserved.

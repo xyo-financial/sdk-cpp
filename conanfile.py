@@ -6,7 +6,7 @@ import os
 class XyoSdkCppConan(ConanFile):
     name = "xyo-sdk-cpp"
     version = "2.0.0"
-    license = "BSD-3-Clause"
+    license = "Apache-2.0"
     author = "Syniol Limited"
     url = "https://github.com/xyo-financial/sdk-cpp"
     description = "XYO SDK to connect and consume AI Banking Transaction Enrichment API"
