@@ -1,24 +1,32 @@
-name: Regenerate C++ SDK from OpenAPI spec
+name: Regenerate C++ OpenAPI Client
 
 on:
-  push:
-    paths:
-      - 'specs/openapi.yml'
-      - 'cpp/.github/workflows/generate.yml'
-  pull_request:
-    paths:
-      - 'specs/openapi.yml'
-      - 'cpp/.github/workflows/generate.yml'
+  repository_dispatch:
+    types: [spec_tagged, spec_updated]
   workflow_dispatch:
+    inputs:
+      spec_tag:
+        description: 'Tag or branch in xyo-financial/specs to generate from'
+        required: false
+        default: 'main'
 
 jobs:
-  generate:
+  regenerate:
     name: Generate & Build C++ SDK
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout SDK repository
         uses: actions/checkout@v4
+
+      - name: Checkout OpenAPI specification
+        uses: actions/checkout@v4
+        with:
+          repository: xyo-financial/specs
+          ref: ${{ github.event.client_payload.tag || inputs.spec_tag || 'main' }}
+          path: specs
 
       - name: Set up Node.js (for openapi-generator-cli)
         uses: actions/setup-node@v4
@@ -36,33 +44,35 @@ jobs:
             libssl-dev
 
       - name: Generate OpenAPI C++ client (cpp-restsdk)
-        working-directory: ${{ github.workspace }}
         run: |
           npx -y @openapitools/openapi-generator-cli generate \
             -i specs/openapi.yml \
             -g cpp-restsdk \
-            -o cpp/openapi \
+            -o openapi \
             --additional-properties=packageName=XYOSDK,apiPackage=xyo_api,modelPackage=xyo_model
 
+          # Remove generator noise and scaffolding files
+          rm -f openapi/git_push.sh \
+                openapi/.travis.yml \
+                openapi/README.md
+          rm -rf openapi/test \
+                 openapi/docs \
+                 openapi/api
+
+          # Clean up specs checkout so it is not committed
+          rm -rf specs
+
       - name: Configure CMake
-        working-directory: cpp
         run: cmake -B build -S . -DXYO_BUILD_TESTS=ON
 
       - name: Build SDK
-        working-directory: cpp
         run: cmake --build build --parallel
 
       - name: Run tests
-        working-directory: cpp
         run: ctest --test-dir build --output-on-failure
 
-      - name: Commit regenerated openapi/ files
-        # Only auto-commit on direct pushes to main (not PRs).
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add cpp/openapi
-          git diff --quiet && git diff --staged --quiet \
-            || git commit -m "auto: regenerate C++ SDK openapi client from openapi.yml [skip ci]"
-          git push
+      - name: Commit regenerated client
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: regenerate OpenAPI client from spec ${{ github.event.client_payload.tag || inputs.spec_tag || 'latest' }}"
+          file_pattern: "openapi/**"
