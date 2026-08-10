@@ -1,0 +1,7 @@
+openapi/**
+openapi/*
+build/**
+build*/**
+cmake-build*/**
+test_package/build/**
+example/build/**
