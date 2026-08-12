@@ -47,22 +47,26 @@ jobs:
         run: |
           brew install cpprestsdk boost
 
-      - name: Install System Dependencies (Windows)
+      - name: Setup Python (Windows)
         if: matrix.os == 'windows-latest'
-        shell: pwsh
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install System Dependencies (Windows via Conan)
+        if: matrix.os == 'windows-latest'
         run: |
-          $vcpkgDir = Join-Path $env:RUNNER_TEMP "vcpkg"
-          git clone --depth 1 --branch 2024.02.14 https://github.com/microsoft/vcpkg.git $vcpkgDir
-          & (Join-Path $vcpkgDir "bootstrap-vcpkg.bat") -disableMetrics
-          & (Join-Path $vcpkgDir "vcpkg.exe") install cpprestsdk:x64-windows zlib:x64-windows
+          pip install conan
+          conan profile detect --force
+          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }}
+        shell: bash
 
       - name: Configure CMake
         shell: bash
         run: |
           EXTRA_ARGS=""
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            VCPKG_PATH=$(echo "$RUNNER_TEMP/vcpkg/scripts/buildsystems/vcpkg.cmake" | sed 's/\\/\//g')
-            EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_PATH} -DVCPKG_TARGET_TRIPLET=x64-windows"
+            EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake"
           fi
           cmake -S . -B build $EXTRA_ARGS -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DXYO_BUILD_TESTS=ON
 
