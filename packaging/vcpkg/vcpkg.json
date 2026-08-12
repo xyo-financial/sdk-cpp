@@ -6,6 +6,8 @@
   "license": "Apache-2.0",
   "dependencies": [
     "cpprestsdk",
-    "boost"
+    "boost",
+    "zlib",
+    "openssl"
   ]
 }
