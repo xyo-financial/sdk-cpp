@@ -50,7 +50,9 @@ jobs:
       - name: Install System Dependencies (Windows)
         if: matrix.os == 'windows-latest'
         run: |
-          vcpkg install cpprestsdk:x64-windows boost:x64-windows zlib:x64-windows openssl:x64-windows
+          cd "$VCPKG_INSTALLATION_ROOT"
+          git pull --quiet
+          vcpkg install cpprestsdk:x64-windows zlib:x64-windows
         shell: bash
 
       - name: Configure CMake
