@@ -8,8 +8,10 @@
 // All HTTP / serialisation logic is delegated to the generated layer in openapi/.
 // ---------------------------------------------------------------------------
 
+#include <cstddef>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
