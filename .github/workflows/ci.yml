@@ -51,6 +51,8 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: |
           cd "$VCPKG_INSTALLATION_ROOT"
+          git sparse-checkout disable
+          git checkout master
           git pull --quiet
           vcpkg install cpprestsdk:x64-windows zlib:x64-windows
         shell: bash
