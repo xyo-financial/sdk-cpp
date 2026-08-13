@@ -40,7 +40,7 @@ class XyoSdkCppConan(ConanFile):
 
     def requirements(self):
         self.requires("cpprestsdk/2.10.18")
-        self.requires("boost/[>=1.84.0 <1.90]")
+        self.requires("boost/[>=1.84.0 <1.90]", override=True)
         self.requires("zlib/[>=1.2.11 <2]")
         self.requires("openssl/[>=1.1.1 <4]")
 
