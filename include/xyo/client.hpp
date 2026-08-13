@@ -89,7 +89,7 @@ struct XYO_SDK_API ClientConfig {
 // SDK error type
 // ---------------------------------------------------------------------------
 
-enum class ErrorCategory { validation, transport, http, parsing };
+enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing };
 
 class XYO_SDK_API Error : public std::runtime_error {
  public:
@@ -124,14 +124,14 @@ class XYO_SDK_API Client {
   ~Client() noexcept;
 
   /// Enrich a single financial transaction (synchronous).
-  EnrichmentResponse enrichTransaction(const EnrichmentRequest& request) const;
+  [[nodiscard]] EnrichmentResponse enrichTransaction(const EnrichmentRequest& request) const;
 
   /// Enrich a batch of transactions asynchronously; returns a job handle.
-  BulkEnrichmentResponse enrichTransactions(
+  [[nodiscard]] BulkEnrichmentResponse enrichTransactions(
       const std::vector<EnrichmentRequest>& requests) const;
 
   /// Poll the status of an async bulk enrichment job.
-  EnrichmentStatus getEnrichmentStatus(const std::string& id) const;
+  [[nodiscard]] EnrichmentStatus getEnrichmentStatus(const std::string& id) const;
 
   /// Download and decode a completed enrichment collection archive.
   ///
@@ -142,7 +142,7 @@ class XYO_SDK_API Client {
   /// @returns            A vector of all EnrichmentResponse records found
   ///                     inside the archive.
   /// @throws xyo::Error  On HTTP errors, I/O failures, or parse failures.
-  std::vector<EnrichmentResponse>
+  [[nodiscard]] std::vector<EnrichmentResponse>
   downloadEnrichmentCollection(const std::string& downloadUrl) const;
 
  private:

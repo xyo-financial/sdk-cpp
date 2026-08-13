@@ -24,10 +24,12 @@
 #include <cpprest/json.h>
 #include <boost/optional.hpp>
 #include <boost/none.hpp>
-#include <zlib.h>
+#include <openssl/crypto.h>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -77,17 +79,9 @@ std::string to_string(EnrichmentStatus status) {
 namespace {
 
 void secure_erase(std::string& str) noexcept {
-  try {
-    if (str.capacity() > 0) {
-      str.resize(str.capacity(), '\0');
-      volatile char* p = const_cast<volatile char*>(str.data());
-      for (std::size_t i = 0; i < str.size(); ++i) {
-        p[i] = '\0';
-      }
-      str.clear();
-    }
-  } catch (...) {
-    // std::string::resize does not throw when n <= capacity
+  if (str.capacity() > 0) {
+    OPENSSL_cleanse(str.data(), str.capacity());
+    str.clear();
   }
 }
 
@@ -139,21 +133,22 @@ Error::Error(ErrorCategory category, const std::string& message,
 // ---------------------------------------------------------------------------
 
 struct Client::Impl {
+  ClientConfig                            config;
   std::shared_ptr<xyo_api::ApiClient>     api_client;
   std::shared_ptr<xyo_api::EnrichmentApi> enrichment_api;
 
-  explicit Impl(const ClientConfig& cfg) {
+  explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {
     auto configuration = std::make_shared<xyo_api::ApiConfiguration>();
-    configuration->setBaseUrl(to_sdk(cfg.base_url));
+    configuration->setBaseUrl(to_sdk(config.base_url));
     // Bearer-token authentication: set the Authorization header.
     configuration->getDefaultHeaders()[to_sdk("Authorization")] =
-        to_sdk("Bearer " + cfg.api_key);
+        to_sdk("Bearer " + config.api_key);
 
-    if (cfg.request_timeout_ms > 0) {
-      web::http::client::http_client_config http_config;
-      http_config.set_timeout(utility::seconds(std::max<long>(1, cfg.request_timeout_ms / 1000)));
-      configuration->setHttpConfig(http_config);
+    web::http::client::http_client_config http_config;
+    if (config.request_timeout_ms > 0) {
+      http_config.set_timeout(utility::seconds((std::max)(1L, config.request_timeout_ms / 1000)));
     }
+    configuration->setHttpConfig(http_config);
 
     api_client = std::make_shared<xyo_api::ApiClient>(configuration);
     enrichment_api = std::make_shared<xyo_api::EnrichmentApi>(api_client);
@@ -168,7 +163,7 @@ Client::Client(ClientConfig config) {
   if (config.api_key.empty()) {
     throw Error(ErrorCategory::validation, "api_key must not be empty");
   }
-  impl_ = std::make_unique<Impl>(config);
+  impl_ = std::make_unique<Impl>(std::move(config));
 }
 
 Client::Client(Client&&) noexcept = default;
@@ -235,6 +230,12 @@ BulkEnrichmentResponse Client::enrichTransactions(
   if (requests.empty()) {
     throw Error(ErrorCategory::validation,
                 "enrichTransactions: request list must not be empty");
+  }
+  if (requests.size() > impl_->config.max_collection_size) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(requests.size()) +
+                " exceeds configured max_collection_size of " +
+                std::to_string(impl_->config.max_collection_size));
   }
 
   std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>> items;
@@ -342,6 +343,10 @@ std::string gunzip(const std::vector<uint8_t>& compressed) {
     throw xyo::Error(xyo::ErrorCategory::parsing,
                      "downloadEnrichmentCollection: empty compressed data");
   }
+  if (compressed.size() > static_cast<std::size_t>((std::numeric_limits<uInt>::max)())) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: compressed payload exceeds maximum supported size");
+  }
 
   // inflateInit2 with windowBits=31 enables automatic gzip header detection.
   z_stream zs{};
@@ -403,6 +408,23 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
       if (hdr[i] != '\0') all_zero = false;
     }
     if (all_zero) break;
+
+    // Verify 8-byte octal header checksum at offset 148
+    unsigned int expected_chk = 0;
+    for (std::size_t i = 0; i < TAR_BLOCK_SIZE; ++i) {
+      if (i >= 148 && i < 156) {
+        expected_chk += ' ';
+      } else {
+        expected_chk += static_cast<unsigned char>(hdr[i]);
+      }
+    }
+    char chk_field[9] = {};
+    std::memcpy(chk_field, hdr + 148, 8);
+    unsigned int actual_chk = static_cast<unsigned int>(std::strtoul(chk_field, nullptr, 8));
+    if (actual_chk != 0 && actual_chk != expected_chk) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: tar header checksum mismatch");
+    }
 
     // Filename is at offset 0 (100 bytes, NUL-padded).
     // Typeflag is at offset 156: '0' or '\0' = regular file.
@@ -488,98 +510,113 @@ xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
   return out;
 }
 
-}  // anonymous namespace
-
-std::vector<EnrichmentResponse>
+}  // anonymousstd::vector<EnrichmentResponse>
 Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
   if (downloadUrl.empty()) {
     throw Error(ErrorCategory::validation,
                 "downloadEnrichmentCollection: downloadUrl must not be empty");
   }
 
-  auto api_cfg = impl_->api_client->getConfiguration();
-  std::string full_url = downloadUrl;
-  if (downloadUrl.rfind("http://", 0) != 0 && downloadUrl.rfind("https://", 0) != 0) {
-    std::string base = to_std(api_cfg->getBaseUrl());
-    if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
-      full_url = base + full_url.substr(1);
-    } else if (!base.empty() && base.back() != '/' && !full_url.empty() && full_url.front() != '/') {
-      full_url = base + "/" + full_url;
-    } else {
-      full_url = base + full_url;
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Issue GET request with Bearer auth and Accept: application/gzip.
-  // -------------------------------------------------------------------------
-  web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
-
-  web::http::client::http_client http_client(
-      to_sdk(full_url), http_cfg);
-
-  web::http::http_request get_req(web::http::methods::GET);
-
-  // Protocol Downgrade & SSRF Protection:
-  // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
-  web::uri target_uri(to_sdk(full_url));
-  web::uri base_uri(api_cfg->getBaseUrl());
-  bool base_is_https   = (base_uri.scheme() == utility::conversions::to_string_t("https"));
-  bool target_is_https = (target_uri.scheme() == utility::conversions::to_string_t("https"));
-
-  if (base_is_https && !target_is_https) {
-    throw Error(ErrorCategory::validation,
-                "downloadEnrichmentCollection: refusing insecure HTTP download link for HTTPS client");
-  }
-
-  // 2. Only attach Authorization header if target host and port match the configured base_url
-  auto get_effective_port = [](const web::uri& u) -> int {
-    int p = u.port();
-    if (p <= 0) {
-      if (u.scheme() == utility::conversions::to_string_t("https")) return 443;
-      if (u.scheme() == utility::conversions::to_string_t("http")) return 80;
-    }
-    return p;
-  };
-
-  bool is_same_host = (target_uri.host() == base_uri.host());
-  bool is_same_port = (get_effective_port(target_uri) == get_effective_port(base_uri));
-
-  if (is_same_host && is_same_port) {
-    const auto& default_headers = api_cfg->getDefaultHeaders();
-    auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
-    if (auth_it != default_headers.end()) {
-      get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
-    }
-  }
-  get_req.headers()[utility::conversions::to_string_t("Accept")] =
-      utility::conversions::to_string_t("application/gzip");
-
-  web::http::http_response response;
-  try {
-    response = http_client.request(get_req).get();
-  } catch (const std::exception& e) {
-    throw Error(ErrorCategory::transport,
-                std::string("downloadEnrichmentCollection: request failed: ") + e.what());
-  }
-
-  const auto status = response.status_code();
-  if (status != web::http::status_codes::OK) {
-    throw Error(ErrorCategory::http,
-                "downloadEnrichmentCollection: HTTP error",
-                static_cast<long>(status));
-  }
-
-  // -------------------------------------------------------------------------
-  // Read compressed body into a byte vector.
-  // -------------------------------------------------------------------------
   std::vector<uint8_t> compressed_body;
   try {
-    auto body_task = response.extract_vector();
-    compressed_body = body_task.get();
-  } catch (const std::exception& e) {
-    throw Error(ErrorCategory::transport,
-                std::string("downloadEnrichmentCollection: failed to read body: ") + e.what());
+    auto api_cfg = impl_->api_client->getConfiguration();
+    std::string full_url = downloadUrl;
+    if (downloadUrl.rfind("http://", 0) != 0 && downloadUrl.rfind("https://", 0) != 0) {
+      std::string base = to_std(api_cfg->getBaseUrl());
+      if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
+        full_url = base + full_url.substr(1);
+      } else if (!base.empty() && base.back() != '/' && !full_url.empty() && full_url.front() != '/') {
+        full_url = base + "/" + full_url;
+      } else {
+        full_url = base + full_url;
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue GET request with Bearer auth and Accept: application/gzip.
+    // -------------------------------------------------------------------------
+    web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
+    web::http::client::http_client http_client(to_sdk(full_url), http_cfg);
+
+    web::http::http_request get_req(web::http::methods::GET);
+
+    // Protocol Downgrade & SSRF Protection:
+    // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
+    web::uri target_uri(to_sdk(full_url));
+    web::uri base_uri(api_cfg->getBaseUrl());
+    bool base_is_https   = (base_uri.scheme() == utility::conversions::to_string_t("https"));
+    bool target_is_https = (target_uri.scheme() == utility::conversions::to_string_t("https"));
+
+    if (base_is_https && !target_is_https) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: refusing insecure HTTP download link for HTTPS client");
+    }
+
+    // 2. Only attach Authorization header if target host and port match the configured base_url
+    auto get_effective_port = [](const web::uri& u) -> int {
+      int p = u.port();
+      if (p <= 0) {
+        if (u.scheme() == utility::conversions::to_string_t("https")) return 443;
+        if (u.scheme() == utility::conversions::to_string_t("http")) return 80;
+      }
+      return p;
+    };
+
+    auto iequals = [](const utility::string_t& a, const utility::string_t& b) noexcept {
+      if (a.size() != b.size()) return false;
+      return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                        [](auto ca, auto cb) {
+                          return std::tolower(static_cast<unsigned char>(ca)) ==
+                                 std::tolower(static_cast<unsigned char>(cb));
+                        });
+    };
+
+    bool is_same_host = iequals(target_uri.host(), base_uri.host());
+    bool is_same_port = (get_effective_port(target_uri) == get_effective_port(base_uri));
+
+    if (is_same_host && is_same_port) {
+      const auto& default_headers = api_cfg->getDefaultHeaders();
+      auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
+      if (auth_it != default_headers.end()) {
+        get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
+      }
+    }
+    get_req.headers()[utility::conversions::to_string_t("Accept")] =
+        utility::conversions::to_string_t("application/gzip");
+
+    web::http::http_response response;
+    try {
+      response = http_client.request(get_req).get();
+    } catch (const std::exception& e) {
+      throw Error(ErrorCategory::transport,
+                  std::string("downloadEnrichmentCollection: request failed: ") + e.what());
+    }
+
+    const auto status = response.status_code();
+    if (status != web::http::status_codes::OK) {
+      throw Error(ErrorCategory::http,
+                  "downloadEnrichmentCollection: HTTP error",
+                  static_cast<long>(status));
+    }
+
+    // -------------------------------------------------------------------------
+    // Read compressed body into a byte vector.
+    // -------------------------------------------------------------------------
+    try {
+      auto body_task = response.extract_vector();
+      compressed_body = body_task.get();
+    } catch (const std::exception& e) {
+      throw Error(ErrorCategory::transport,
+                  std::string("downloadEnrichmentCollection: failed to read body: ") + e.what());
+    }
+  } catch (const Error&) {
+    throw;
+  } catch (const web::uri_exception& e) {
+    throw Error(ErrorCategory::validation,
+                std::string("downloadEnrichmentCollection: invalid URL format: ") + e.what());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::validation,
+                std::string("downloadEnrichmentCollection: invalid argument: ") + e.what());
   }
 
   if (compressed_body.empty()) {
