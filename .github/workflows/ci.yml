@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022]
         build_type: [Debug, Release]
         compiler: [gcc, clang, msvc]
         exclude:
@@ -28,9 +28,9 @@ jobs:
             compiler: gcc
           - os: macos-latest
             compiler: msvc
-          - os: windows-latest
+          - os: windows-2022
             compiler: gcc
-          - os: windows-latest
+          - os: windows-2022
             compiler: clang
 
     steps:
@@ -48,32 +48,30 @@ jobs:
           brew install cpprestsdk boost
 
       - name: Setup MSVC Developer Command Prompt (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         uses: ilammy/msvc-dev-cmd@v1
-        with:
-          toolset: '14.3'
 
       - name: Setup Python (Windows)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: '3.11'
 
       - name: Install System Dependencies (Windows via Conan)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2022'
         env:
           CL: "/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING /D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS"
         run: |
           pip install conan ninja
           conan profile detect --force
-          conan install . --output-folder=build --build=missing -s compiler.version=193 -s build_type=${{ matrix.build_type }} -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
+          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }} -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
         shell: bash
 
       - name: Configure CMake
         shell: bash
         run: |
           EXTRA_ARGS=""
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
             EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake -G Ninja"
           fi
           cmake -S . -B build $EXTRA_ARGS -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DXYO_BUILD_TESTS=ON
