@@ -853,7 +853,7 @@ int main() {
 
     // 10k. Malformed URL throws validation error
     expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
-      client.downloadEnrichmentCollection("http://api.xyo.financial:99999999/downloads");
+      client.downloadEnrichmentCollection("http://[::1/downloads");
     });
 
     // 10l. Tar header checksum mismatch
