@@ -4,6 +4,13 @@ project(XYOSDK VERSION 2.0.0 LANGUAGES CXX)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+if(MSVC)
+  add_compile_definitions(
+    _SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING
+    _SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS
+  )
+endif()
+
 # ---------------------------------------------------------------------------
 # Dependencies – cpprestsdk (casablanca) provides HTTP + JSON + pplx.
 # libcurl is no longer used directly by the wrapper; cpprestsdk bundles its
