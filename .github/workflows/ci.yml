@@ -47,6 +47,10 @@ jobs:
         run: |
           brew install cpprestsdk boost
 
+      - name: Setup MSVC Developer Command Prompt (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup Python (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
