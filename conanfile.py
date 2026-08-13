@@ -21,6 +21,7 @@ class XyoSdkCppConan(ConanFile):
         "fPIC": True,
         "boost/*:without_context": True,
         "boost/*:without_coroutine": True,
+        "boost/*:without_contract": True,
         "boost/*:without_fiber": True,
         "boost/*:without_wave": True,
         "boost/*:without_stacktrace": True,
@@ -34,6 +35,8 @@ class XyoSdkCppConan(ConanFile):
     def configure(self):
         if self.options.shared:
             self.options.rm_safe("fPIC")
+        # This SDK requires C++17; fail fast rather than deep inside Boost b2.
+        self.settings.compiler.cppstd = "17"
 
     def requirements(self):
         self.requires("cpprestsdk/2.10.18")
