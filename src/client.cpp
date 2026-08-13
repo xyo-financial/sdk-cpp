@@ -97,9 +97,7 @@ ClientConfig::ClientConfig(ClientConfig&& other) noexcept
       base_url(std::move(other.base_url)),
       connect_timeout_ms(other.connect_timeout_ms),
       request_timeout_ms(other.request_timeout_ms),
-      max_collection_size(other.max_collection_size) {
-  secure_erase(other.api_key);
-}
+      max_collection_size(other.max_collection_size) {}
 
 ClientConfig& ClientConfig::operator=(ClientConfig&& other) noexcept {
   if (this != &other) {
@@ -109,7 +107,6 @@ ClientConfig& ClientConfig::operator=(ClientConfig&& other) noexcept {
     connect_timeout_ms = other.connect_timeout_ms;
     request_timeout_ms = other.request_timeout_ms;
     max_collection_size = other.max_collection_size;
-    secure_erase(other.api_key);
   }
   return *this;
 }
@@ -147,7 +144,7 @@ struct Client::Impl {
 
     web::http::client::http_client_config http_config;
     if (config.request_timeout_ms > 0) {
-      http_config.set_timeout(utility::seconds((std::max)(1L, config.request_timeout_ms / 1000)));
+      http_config.set_timeout(utility::seconds((std::max)(1L, (config.request_timeout_ms + 999) / 1000)));
     }
     configuration->setHttpConfig(http_config);
 
@@ -171,10 +168,35 @@ Client::Client(Client&&) noexcept = default;
 Client& Client::operator=(Client&&) noexcept = default;
 Client::~Client() noexcept = default;
 
+namespace {
+
+inline void validate_request(const EnrichmentRequest& req, const char* op_name) {
+  if (req.content.empty()) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request content must not be empty");
+  }
+  if (req.content.size() > 128) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request content exceeds maximum length of 128 characters");
+  }
+  if (req.country_code.empty()) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request country_code must not be empty");
+  }
+  if (req.country_code.size() != 2) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request country_code must be a 2-letter ISO 3166-1 alpha-2 code");
+  }
+}
+
+}  // anonymous namespace
+
 // ---------------------------------------------------------------------------
 // enrichTransaction – single transaction, synchronous.
 // ---------------------------------------------------------------------------
 EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) const {
+  validate_request(request, "enrichTransaction");
+
   auto req = std::make_shared<xyo_model::EnrichmentRequest>();
   req->setContent(to_sdk(request.content));
   req->setCountryCode(to_sdk(request.country_code));
@@ -242,6 +264,7 @@ BulkEnrichmentResponse Client::enrichTransactions(
   std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>> items;
   items.reserve(requests.size());
   for (const auto& r : requests) {
+    validate_request(r, "enrichTransactions");
     auto item = std::make_shared<xyo_model::EnrichTransactions_request_inner>();
     item->setContent(to_sdk(r.content));
     item->setCountryCode(to_sdk(r.country_code));

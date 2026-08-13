@@ -804,7 +804,7 @@ int main() {
       char hdr[512] = {};
       std::strncpy(hdr, "entry.json", 100);
       std::snprintf(hdr + 100, 8, "%07o", 0644);
-      std::snprintf(hdr + 124, 12, "%011zo", static_cast<std::size_t>(1000));
+      std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(1000));
       hdr[156] = '0';
       std::memset(hdr + 148, ' ', 8);
       unsigned int checksum = 0;
@@ -861,7 +861,7 @@ int main() {
       char hdr[512] = {};
       std::strncpy(hdr, "corrupt_checksum.json", 100);
       std::snprintf(hdr + 100, 8, "%07o", 0644);
-      std::snprintf(hdr + 124, 12, "%011zo", static_cast<std::size_t>(10));
+      std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(10));
       hdr[156] = '0';
       // Deliberately set incorrect checksum
       std::snprintf(hdr + 148, 8, "%06o", 12345);
