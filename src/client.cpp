@@ -535,6 +535,11 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       }
     }
 
+    if (!web::uri::validate(to_sdk(full_url))) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: invalid URL format: failed URI validation");
+    }
+
     // Protocol Downgrade & SSRF Protection:
     // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
     web::uri target_uri(to_sdk(full_url));
