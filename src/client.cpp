@@ -535,18 +535,16 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       }
     }
 
-    // -------------------------------------------------------------------------
-    // Issue GET request with Bearer auth and Accept: application/gzip.
-    // -------------------------------------------------------------------------
-    web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
-    web::http::client::http_client http_client(to_sdk(full_url), http_cfg);
-
-    web::http::http_request get_req(web::http::methods::GET);
-
     // Protocol Downgrade & SSRF Protection:
     // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
     web::uri target_uri(to_sdk(full_url));
     web::uri base_uri(api_cfg->getBaseUrl());
+
+    if (target_uri.host().empty() || target_uri.scheme().empty()) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: invalid URL format: missing host or scheme");
+    }
+
     bool base_is_https   = (base_uri.scheme() == utility::conversions::to_string_t("https"));
     bool target_is_https = (target_uri.scheme() == utility::conversions::to_string_t("https"));
 
@@ -554,6 +552,14 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       throw Error(ErrorCategory::validation,
                   "downloadEnrichmentCollection: refusing insecure HTTP download link for HTTPS client");
     }
+
+    // -------------------------------------------------------------------------
+    // Issue GET request with Bearer auth and Accept: application/gzip.
+    // -------------------------------------------------------------------------
+    web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
+    web::http::client::http_client http_client(target_uri, http_cfg);
+
+    web::http::http_request get_req(web::http::methods::GET);
 
     // 2. Only attach Authorization header if target host and port match the configured base_url
     auto get_effective_port = [](const web::uri& u) -> int {
