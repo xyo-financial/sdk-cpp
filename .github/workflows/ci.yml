@@ -64,7 +64,7 @@ jobs:
         run: |
           pip install conan ninja
           conan profile detect --force
-          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }} -o "boost/*:header_only=True" -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
+          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }} -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
         shell: bash
 
       - name: Configure CMake
@@ -96,4 +96,4 @@ jobs:
           pip install conan
           conan profile detect --force
       - name: Test Conan Recipe Creation
-        run: conan create . --build=missing -o "boost/*:header_only=True"
+        run: conan create . --build=missing

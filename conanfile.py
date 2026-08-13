@@ -19,7 +19,11 @@ class XyoSdkCppConan(ConanFile):
     default_options = {
         "shared": False,
         "fPIC": True,
-        "boost/*:header_only": True,
+        "boost/*:without_context": True,
+        "boost/*:without_coroutine": True,
+        "boost/*:without_fiber": True,
+        "boost/*:without_wave": True,
+        "boost/*:without_stacktrace": True,
     }
     exports_sources = "CMakeLists.txt", "LICENSE", "include/*", "src/*", "openapi/*", "cmake/*", "tests/*"
 
