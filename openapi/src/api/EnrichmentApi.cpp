@@ -116,7 +116,7 @@ pplx::task<std::shared_ptr<EnrichmentResponse>> EnrichmentApi::enrichTransaction
     // authentication (BearerAuth) required
 
     return m_ApiClient->callApi(localVarPath, utility::conversions::to_string_t("POST"), localVarQueryParams, localVarHttpBody, localVarHeaderParams, localVarFormParams, localVarFileParams, localVarRequestHttpContentType)
-    .then([=, this](web::http::http_response localVarResponse)
+    .then([=](web::http::http_response localVarResponse)
     {
         if (m_ApiClient->getResponseHandler())
         {
@@ -149,7 +149,7 @@ pplx::task<std::shared_ptr<EnrichmentResponse>> EnrichmentApi::enrichTransaction
 
         return localVarResponse.extract_string();
     })
-    .then([=, this](utility::string_t localVarResponse)
+    .then([=](utility::string_t localVarResponse)
     {
         std::shared_ptr<EnrichmentResponse> localVarResult(new EnrichmentResponse());
 
@@ -271,7 +271,7 @@ pplx::task<std::shared_ptr<EnrichTransactionCollectionResponse>> EnrichmentApi::
     // authentication (BearerAuth) required
 
     return m_ApiClient->callApi(localVarPath, utility::conversions::to_string_t("POST"), localVarQueryParams, localVarHttpBody, localVarHeaderParams, localVarFormParams, localVarFileParams, localVarRequestHttpContentType)
-    .then([=, this](web::http::http_response localVarResponse)
+    .then([=](web::http::http_response localVarResponse)
     {
         if (m_ApiClient->getResponseHandler())
         {
@@ -304,7 +304,7 @@ pplx::task<std::shared_ptr<EnrichTransactionCollectionResponse>> EnrichmentApi::
 
         return localVarResponse.extract_string();
     })
-    .then([=, this](utility::string_t localVarResponse)
+    .then([=](utility::string_t localVarResponse)
     {
         std::shared_ptr<EnrichTransactionCollectionResponse> localVarResult(new EnrichTransactionCollectionResponse());
 
@@ -399,7 +399,7 @@ pplx::task<std::shared_ptr<EnrichmentCollectionStatusResponse>> EnrichmentApi::g
     // authentication (BearerAuth) required
 
     return m_ApiClient->callApi(localVarPath, utility::conversions::to_string_t("GET"), localVarQueryParams, localVarHttpBody, localVarHeaderParams, localVarFormParams, localVarFileParams, localVarRequestHttpContentType)
-    .then([=, this](web::http::http_response localVarResponse)
+    .then([=](web::http::http_response localVarResponse)
     {
         if (m_ApiClient->getResponseHandler())
         {
@@ -432,7 +432,7 @@ pplx::task<std::shared_ptr<EnrichmentCollectionStatusResponse>> EnrichmentApi::g
 
         return localVarResponse.extract_string();
     })
-    .then([=, this](utility::string_t localVarResponse)
+    .then([=](utility::string_t localVarResponse)
     {
         std::shared_ptr<EnrichmentCollectionStatusResponse> localVarResult(new EnrichmentCollectionStatusResponse());
 

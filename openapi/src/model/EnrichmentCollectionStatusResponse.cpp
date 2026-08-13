@@ -121,8 +121,8 @@ const utility::string_t EnrichmentCollectionStatusResponse::fromStatusEnum(const
         case StatusEnum::FAILED: return utility::conversions::to_string_t("FAILED");
         
         case StatusEnum::PENDING: return utility::conversions::to_string_t("PENDING");
-        
     }
+    return utility::conversions::to_string_t("UNKNOWN");
 }
 
 
