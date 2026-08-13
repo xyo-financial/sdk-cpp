@@ -74,6 +74,25 @@ std::string to_string(EnrichmentStatus status) {
   return "UNKNOWN";
 }
 
+namespace {
+
+void secure_erase(std::string& str) noexcept {
+  try {
+    if (str.capacity() > 0) {
+      str.resize(str.capacity(), '\0');
+      volatile char* p = const_cast<volatile char*>(str.data());
+      for (std::size_t i = 0; i < str.size(); ++i) {
+        p[i] = '\0';
+      }
+      str.clear();
+    }
+  } catch (...) {
+    // std::string::resize does not throw when n <= capacity
+  }
+}
+
+}  // anonymous namespace
+
 // ---------------------------------------------------------------------------
 // ClientConfig
 // ---------------------------------------------------------------------------
@@ -84,44 +103,24 @@ ClientConfig::ClientConfig(ClientConfig&& other) noexcept
       connect_timeout_ms(other.connect_timeout_ms),
       request_timeout_ms(other.request_timeout_ms),
       max_collection_size(other.max_collection_size) {
-  if (other.api_key.capacity() > 0) {
-    volatile char* p = const_cast<volatile char*>(other.api_key.data());
-    for (std::size_t i = 0; i < other.api_key.capacity(); ++i) {
-      p[i] = '\0';
-    }
-  }
+  secure_erase(other.api_key);
 }
 
 ClientConfig& ClientConfig::operator=(ClientConfig&& other) noexcept {
   if (this != &other) {
-    if (api_key.capacity() > 0) {
-      volatile char* p = const_cast<volatile char*>(api_key.data());
-      for (std::size_t i = 0; i < api_key.capacity(); ++i) {
-        p[i] = '\0';
-      }
-    }
+    secure_erase(api_key);
     api_key = std::move(other.api_key);
     base_url = std::move(other.base_url);
     connect_timeout_ms = other.connect_timeout_ms;
     request_timeout_ms = other.request_timeout_ms;
     max_collection_size = other.max_collection_size;
-    if (other.api_key.capacity() > 0) {
-      volatile char* p = const_cast<volatile char*>(other.api_key.data());
-      for (std::size_t i = 0; i < other.api_key.capacity(); ++i) {
-        p[i] = '\0';
-      }
-    }
+    secure_erase(other.api_key);
   }
   return *this;
 }
 
 ClientConfig::~ClientConfig() noexcept {
-  if (api_key.capacity() > 0) {
-    volatile char* p = const_cast<volatile char*>(api_key.data());
-    for (std::size_t i = 0; i < api_key.capacity(); ++i) {
-      p[i] = '\0';
-    }
-  }
+  secure_erase(api_key);
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +432,8 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     }
     padded &= ~static_cast<std::size_t>(TAR_BLOCK_SIZE - 1);
 
-    if (offset > total - padded) {
+    // Safe boundary check without underflow risk
+    if (padded > total - offset) {
       offset = total;
     } else {
       offset += padded;
@@ -533,8 +533,17 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
   }
 
   // 2. Only attach Authorization header if target host and port match the configured base_url
+  auto get_effective_port = [](const web::uri& u) -> int {
+    int p = u.port();
+    if (p <= 0) {
+      if (u.scheme() == utility::conversions::to_string_t("https")) return 443;
+      if (u.scheme() == utility::conversions::to_string_t("http")) return 80;
+    }
+    return p;
+  };
+
   bool is_same_host = (target_uri.host() == base_uri.host());
-  bool is_same_port = (target_uri.port() == base_uri.port());
+  bool is_same_port = (get_effective_port(target_uri) == get_effective_port(base_uri));
 
   if (is_same_host && is_same_port) {
     const auto& default_headers = api_cfg->getDefaultHeaders();
