@@ -420,7 +420,7 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
       // Check for integer overflow on file boundary
       if (file_size > total || offset > total - file_size) {
         throw xyo::Error(xyo::ErrorCategory::parsing,
-                         "downloadEnrichmentCollection: truncated or malformed tar archive");
+                         "downloadEnrichmentCollection: truncated tar archive");
       }
       entries.emplace_back(tar_bytes.data() + offset, file_size);
     }
