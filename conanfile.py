@@ -20,11 +20,11 @@ class XyoSdkCppConan(ConanFile):
     default_options = {
         "shared": False,
         "fPIC": True,
-        # Disable heavy / problematic Boost sub-libraries we don't need.
-        # contract, context, coroutine, fiber have known MSVC 14.3 source-build
-        # failures in Boost < 1.84.0 and are not required by cpprestsdk.
+        # Disable Boost sub-libraries not required by this SDK or cpprestsdk.
+        # NOTE: boost::context MUST remain enabled — cpprestsdk's pplx task
+        # engine depends on it on Linux/macOS. contract/coroutine/fiber/wave
+        # are safe to disable and were the source of MSVC 14.3 build failures.
         "boost/*:without_contract": True,
-        "boost/*:without_context": True,
         "boost/*:without_coroutine": True,
         "boost/*:without_fiber": True,
         "boost/*:without_wave": True,
