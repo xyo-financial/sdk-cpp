@@ -52,14 +52,24 @@ void expects_error(xyo::ErrorCategory expected_category,
                    const std::function<void()>& operation) {
   try {
     operation();
-    std::cerr << "Expected error with category and message containing '"
-              << expected_message_substring << "' but no exception was thrown.\n";
+    std::cerr << "Expected error with category " << static_cast<int>(expected_category)
+              << " and message containing '" << expected_message_substring
+              << "' but no exception was thrown.\n";
     std::exit(1);
   } catch (const xyo::Error& e) {
+    if (e.category() != expected_category) {
+      std::cerr << "Category mismatch: expected category " << static_cast<int>(expected_category)
+                << " but got category " << static_cast<int>(e.category())
+                << " with message: " << e.what() << "\n";
+    }
     TEST_ASSERT(e.category() == expected_category);
     TEST_ASSERT(e.what() != nullptr);
     std::string msg(e.what());
     if (!expected_message_substring.empty()) {
+      if (msg.find(expected_message_substring) == std::string::npos) {
+        std::cerr << "Message substring mismatch: expected to find '"
+                  << expected_message_substring << "' in '" << msg << "'\n";
+      }
       TEST_ASSERT(msg.find(expected_message_substring) != std::string::npos);
     }
   }
@@ -843,7 +853,7 @@ int main() {
 
     // 10k. Malformed URL throws validation error
     expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
-      client.downloadEnrichmentCollection("http://[::1/downloads");
+      client.downloadEnrichmentCollection("http://api.xyo.financial:99999999/downloads");
     });
 
     // 10l. Tar header checksum mismatch
