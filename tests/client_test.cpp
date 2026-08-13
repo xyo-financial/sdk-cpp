@@ -236,7 +236,7 @@ std::string create_tar_archive(const std::vector<std::pair<std::string, std::str
     // GID (offset 116, 8 bytes)
     std::snprintf(hdr + 116, 8, "%07o", 0);
     // File size in octal (offset 124, 12 bytes)
-    std::snprintf(hdr + 124, 12, "%011zo", content.size());
+    std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(content.size()));
     // Mtime (offset 136, 12 bytes)
     std::snprintf(hdr + 136, 12, "%011lo", 0L);
     // Typeflag (offset 156): '0' for regular file
@@ -365,7 +365,46 @@ int main() {
   const std::string test_api_key = "xyo-secret-test-bearer-token-12345";
   xyo::ClientConfig client_cfg(test_api_key, server.base_url());
   client_cfg.request_timeout_ms = 5000;
+  client_cfg.max_collection_size = 5;
   xyo::Client client(std::move(client_cfg));
+
+  // ---------------------------------------------------------------------------
+  // 2b. Request validation tests (validate_request & max_collection_size)
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] Request input validation\n";
+    // Empty content
+    expects_error(xyo::ErrorCategory::validation, "request content must not be empty", [&] {
+      client.enrichTransaction({"", "US"});
+    });
+
+    // Content > 128 chars
+    std::string long_content(129, 'A');
+    expects_error(xyo::ErrorCategory::validation, "request content exceeds maximum length of 128 characters", [&] {
+      client.enrichTransaction({long_content, "US"});
+    });
+
+    // Empty country code
+    expects_error(xyo::ErrorCategory::validation, "request country_code must not be empty", [&] {
+      client.enrichTransaction({"Valid transaction", ""});
+    });
+
+    // Country code != 2 characters
+    expects_error(xyo::ErrorCategory::validation, "request country_code must be a 2-letter ISO 3166-1 alpha-2 code", [&] {
+      client.enrichTransaction({"Valid transaction", "USA"});
+    });
+
+    // Batch item validation
+    expects_error(xyo::ErrorCategory::validation, "request content must not be empty", [&] {
+      client.enrichTransactions({{"Valid 1", "US"}, {"", "GB"}});
+    });
+
+    // Batch exceeding max_collection_size (configured as 5)
+    std::vector<xyo::EnrichmentRequest> oversized_batch(6, {"Tx", "US"});
+    expects_error(xyo::ErrorCategory::validation, "exceeds configured max_collection_size", [&] {
+      client.enrichTransactions(oversized_batch);
+    });
+  }
 
   // ---------------------------------------------------------------------------
   // 3. enrichTransaction - Valid input and full response parsing

@@ -69,6 +69,7 @@ struct XYO_SDK_API ClientConfig {
   std::string base_url = "https://api.xyo.financial";
 
   // Optional timeout overrides (milliseconds).
+  /// @note Reserved for future granular socket connect timeouts; request_timeout_ms governs HTTP operations.
   long connect_timeout_ms  = 5'000;
   long request_timeout_ms  = 30'000;
   std::size_t max_collection_size = 1'000;
