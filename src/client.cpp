@@ -30,6 +30,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace xyo {
@@ -77,7 +78,14 @@ std::string to_string(EnrichmentStatus status) {
 // ClientConfig
 // ---------------------------------------------------------------------------
 
-ClientConfig::~ClientConfig() noexcept = default;
+ClientConfig::~ClientConfig() noexcept {
+  if (!api_key.empty()) {
+    volatile char* p = const_cast<volatile char*>(api_key.data());
+    for (std::size_t i = 0; i < api_key.size(); ++i) {
+      p[i] = '\0';
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Error
@@ -286,6 +294,12 @@ EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
 
 namespace {
 
+constexpr std::size_t MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100 MB safety limit
+constexpr std::size_t TAR_BLOCK_SIZE        = 512;
+constexpr std::size_t TAR_SIZE_OFFSET       = 124;
+constexpr std::size_t TAR_SIZE_LEN          = 12;
+constexpr std::size_t TAR_TYPE_OFFSET       = 156;
+
 /// Decompress a gzip byte blob into a std::string using zlib.
 std::string gunzip(const std::vector<uint8_t>& compressed) {
   if (compressed.empty()) {
@@ -317,62 +331,78 @@ std::string gunzip(const std::vector<uint8_t>& compressed) {
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: gzip decompression failed");
     }
-    out.append(buf.data(), buf.size() - zs.avail_out);
+    std::size_t decompressed_bytes = buf.size() - zs.avail_out;
+    if (out.size() + decompressed_bytes > MAX_DECOMPRESSED_SIZE) {
+      inflateEnd(&zs);
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: decompressed data exceeds safety limit (100MB)");
+    }
+    out.append(buf.data(), decompressed_bytes);
   }
 
   inflateEnd(&zs);
   return out;
 }
 
-/// Walk POSIX ustar/GNU tar blocks and return each regular-file's content.
+/// Walk POSIX ustar/GNU tar blocks and return each regular-file's content as string_view.
 /// Each block is 512 bytes; the header occupies block 0, data follows.
-std::vector<std::string> parse_tar_entries(const std::string& tar_bytes) {
-  std::vector<std::string> entries;
+std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
+  std::vector<std::string_view> entries;
   const std::size_t total = tar_bytes.size();
   std::size_t offset = 0;
 
-  while (offset + 512 <= total) {
+  while (offset + TAR_BLOCK_SIZE <= total) {
     const char* hdr = tar_bytes.data() + offset;
 
     // Two consecutive all-zero blocks mark end-of-archive.
     bool all_zero = true;
-    for (int i = 0; i < 512 && all_zero; ++i) {
+    for (std::size_t i = 0; i < TAR_BLOCK_SIZE && all_zero; ++i) {
       if (hdr[i] != '\0') all_zero = false;
     }
     if (all_zero) break;
 
     // Filename is at offset 0 (100 bytes, NUL-padded).
     // Typeflag is at offset 156: '0' or '\0' = regular file.
-    char typeflag = hdr[156];
+    char typeflag = hdr[TAR_TYPE_OFFSET];
 
     // File size is stored as an octal ASCII string at offset 124 (12 bytes).
-    char size_field[13] = {};
-    std::memcpy(size_field, hdr + 124, 12);
+    char size_field[TAR_SIZE_LEN + 1] = {};
+    std::memcpy(size_field, hdr + TAR_SIZE_OFFSET, TAR_SIZE_LEN);
     std::size_t file_size = static_cast<std::size_t>(std::strtoull(size_field, nullptr, 8));
 
-    offset += 512;  // advance past header block
+    offset += TAR_BLOCK_SIZE;  // advance past header block
 
     if ((typeflag == '0' || typeflag == '\0') && file_size > 0) {
-      if (offset + file_size > total) {
-        // Truncated archive.
+      // Check for integer overflow on file boundary
+      if (file_size > total || offset > total - file_size) {
         throw xyo::Error(xyo::ErrorCategory::parsing,
-                         "downloadEnrichmentCollection: truncated tar archive");
+                         "downloadEnrichmentCollection: truncated or malformed tar archive");
       }
       entries.emplace_back(tar_bytes.data() + offset, file_size);
     }
 
-    // Round file_size up to the next 512-byte boundary.
-    std::size_t padded = (file_size + 511) & ~static_cast<std::size_t>(511);
-    offset += padded;
+    // Round file_size up to the next 512-byte boundary with overflow protection
+    std::size_t padded = file_size + (TAR_BLOCK_SIZE - 1);
+    if (padded < file_size) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: tar size padding overflow");
+    }
+    padded &= ~static_cast<std::size_t>(TAR_BLOCK_SIZE - 1);
+
+    if (offset > total - padded) {
+      offset = total;
+    } else {
+      offset += padded;
+    }
   }
   return entries;
 }
 
 /// Parse a single JSON-encoded EnrichmentResponse entry string.
-xyo::EnrichmentResponse parse_enrichment_json(const std::string& json_str) {
+xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
   web::json::value jv;
   try {
-    jv = web::json::value::parse(utility::conversions::to_string_t(json_str));
+    jv = web::json::value::parse(to_sdk(std::string(json_view)));
   } catch (const std::exception& e) {
     throw xyo::Error(xyo::ErrorCategory::parsing,
                      std::string("downloadEnrichmentCollection: JSON parse error: ") + e.what());
@@ -445,11 +475,15 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       to_sdk(full_url), http_cfg);
 
   web::http::http_request get_req(web::http::methods::GET);
-  // Copy authorization header from the shared ApiConfiguration defaults.
-  const auto& default_headers = api_cfg->getDefaultHeaders();
-  auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
-  if (auth_it != default_headers.end()) {
-    get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
+  // SSRF Protection: Only attach authorization header if target host matches the configured base_url host
+  web::uri target_uri(to_sdk(full_url));
+  web::uri base_uri(api_cfg->getBaseUrl());
+  if (target_uri.host() == base_uri.host()) {
+    const auto& default_headers = api_cfg->getDefaultHeaders();
+    auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
+    if (auth_it != default_headers.end()) {
+      get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
+    }
   }
   get_req.headers()[utility::conversions::to_string_t("Accept")] =
       utility::conversions::to_string_t("application/gzip");
@@ -499,7 +533,7 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
                 std::string("downloadEnrichmentCollection: decompression error: ") + e.what());
   }
 
-  std::vector<std::string> raw_entries;
+  std::vector<std::string_view> raw_entries;
   try {
     raw_entries = parse_tar_entries(tar_bytes);
   } catch (const Error&) {
