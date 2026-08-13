@@ -6,10 +6,21 @@
 #include <cpprest/http_listener.h>
 #include <cpprest/json.h>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#ifdef _WIN32
+  #ifndef WIN32_LEAN_AND_MEAN
+    #define WIN32_LEAN_AND_MEAN
+  #endif
+  #ifndef NOMINMAX
+    #define NOMINMAX
+  #endif
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <arpa/inet.h>
+  #include <netinet/in.h>
+  #include <sys/socket.h>
+  #include <unistd.h>
+#endif
 
 #include <zlib.h>
 #include <algorithm>
@@ -55,6 +66,28 @@ void expects_error(xyo::ErrorCategory expected_category,
 }
 
 int get_free_port() {
+#ifdef _WIN32
+  WSADATA wsaData;
+  WSAStartup(MAKEWORD(2, 2), &wsaData);
+  SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (sock == INVALID_SOCKET) return 19876;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    closesocket(sock);
+    return 19876;
+  }
+  int len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    closesocket(sock);
+    return 19876;
+  }
+  int port = ntohs(addr.sin_port);
+  closesocket(sock);
+  return port;
+#else
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) return 19876;
   sockaddr_in addr{};
@@ -73,6 +106,7 @@ int get_free_port() {
   int port = ntohs(addr.sin_port);
   close(sock);
   return port;
+#endif
 }
 
 class MockHttpServer {
