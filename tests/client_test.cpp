@@ -375,34 +375,34 @@ int main() {
     std::cout << "[Test] Request input validation\n";
     // Empty content
     expects_error(xyo::ErrorCategory::validation, "request content must not be empty", [&] {
-      client.enrichTransaction({"", "US"});
+      (void)client.enrichTransaction({"", "US"});
     });
 
     // Content > 128 chars
     std::string long_content(129, 'A');
     expects_error(xyo::ErrorCategory::validation, "request content exceeds maximum length of 128 characters", [&] {
-      client.enrichTransaction({long_content, "US"});
+      (void)client.enrichTransaction({long_content, "US"});
     });
 
     // Empty country code
     expects_error(xyo::ErrorCategory::validation, "request country_code must not be empty", [&] {
-      client.enrichTransaction({"Valid transaction", ""});
+      (void)client.enrichTransaction({"Valid transaction", ""});
     });
 
     // Country code != 2 characters
     expects_error(xyo::ErrorCategory::validation, "request country_code must be a 2-letter ISO 3166-1 alpha-2 code", [&] {
-      client.enrichTransaction({"Valid transaction", "USA"});
+      (void)client.enrichTransaction({"Valid transaction", "USA"});
     });
 
     // Batch item validation
     expects_error(xyo::ErrorCategory::validation, "request content must not be empty", [&] {
-      client.enrichTransactions({{"Valid 1", "US"}, {"", "GB"}});
+      (void)client.enrichTransactions({{"Valid 1", "US"}, {"", "GB"}});
     });
 
     // Batch exceeding max_collection_size (configured as 5)
     std::vector<xyo::EnrichmentRequest> oversized_batch(6, {"Tx", "US"});
     expects_error(xyo::ErrorCategory::validation, "exceeds configured max_collection_size", [&] {
-      client.enrichTransactions(oversized_batch);
+      (void)client.enrichTransactions(oversized_batch);
     });
   }
 
@@ -778,7 +778,7 @@ int main() {
     // 10a. Empty URL validation error
     expects_error(xyo::ErrorCategory::validation,
                   "downloadEnrichmentCollection: downloadUrl must not be empty", [&] {
-                    client.downloadEnrichmentCollection("");
+                    (void)client.downloadEnrichmentCollection("");
                   });
 
     // 10b. HTTP 401 Unauthorized
@@ -786,7 +786,7 @@ int main() {
       return json_response(web::http::status_codes::Unauthorized, R"({"error": "Unauthorized"})");
     });
     try {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/results-98765.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/results-98765.tar.gz");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -798,7 +798,7 @@ int main() {
       return json_response(web::http::status_codes::NotFound, R"({"error": "Archive not found"})");
     });
     try {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/nonexistent.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/nonexistent.tar.gz");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -810,7 +810,7 @@ int main() {
       return json_response(web::http::status_codes::InternalError, R"({"error": "Internal server error"})");
     });
     try {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/error.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/error.tar.gz");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -825,7 +825,7 @@ int main() {
       return resp;
     });
     expects_error(xyo::ErrorCategory::parsing, "empty response body", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/empty.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/empty.tar.gz");
     });
 
     // 10f. Corrupted gzip data
@@ -835,7 +835,7 @@ int main() {
       return gzip_response(web::http::status_codes::OK, data);
     });
     expects_error(xyo::ErrorCategory::parsing, "gzip decompression failed", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/corrupted.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/corrupted.tar.gz");
     });
 
     // 10g. Corrupted / truncated tar archive
@@ -856,7 +856,7 @@ int main() {
       return gzip_response(web::http::status_codes::OK, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "truncated tar archive", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/truncated.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/truncated.tar.gz");
     });
 
     // 10h. Invalid JSON inside tar archive
@@ -867,7 +867,7 @@ int main() {
       return gzip_response(web::http::status_codes::OK, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "JSON parse error", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/badjson.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/badjson.tar.gz");
     });
 
     // 10i. Missing required field in JSON entry
@@ -878,13 +878,13 @@ int main() {
       return gzip_response(web::http::status_codes::OK, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "missing field: merchant", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
     });
 
     // 10j. Transport error for unreachable host
     int unreachable_port = get_free_port();
     try {
-      client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
@@ -892,7 +892,7 @@ int main() {
 
     // 10k. Malformed URL throws validation error
     expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
-      client.downloadEnrichmentCollection("http://invalid uri with spaces/downloads");
+      (void)client.downloadEnrichmentCollection("http://invalid uri with spaces/downloads");
     });
 
     // 10l. Tar header checksum mismatch
@@ -911,7 +911,7 @@ int main() {
       return gzip_response(web::http::status_codes::OK, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "tar header checksum mismatch", [&] {
-      client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
     });
   }
 
