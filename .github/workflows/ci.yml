@@ -50,6 +50,8 @@ jobs:
       - name: Setup MSVC Developer Command Prompt (Windows)
         if: matrix.os == 'windows-latest'
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          toolset: '14.3'
 
       - name: Setup Python (Windows)
         if: matrix.os == 'windows-latest'
@@ -64,7 +66,7 @@ jobs:
         run: |
           pip install conan ninja
           conan profile detect --force
-          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }} -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
+          conan install . --output-folder=build --build=missing -s compiler.version=193 -s build_type=${{ matrix.build_type }} -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
         shell: bash
 
       - name: Configure CMake
