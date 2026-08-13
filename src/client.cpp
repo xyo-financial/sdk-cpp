@@ -25,6 +25,7 @@
 #include <boost/optional.hpp>
 #include <boost/none.hpp>
 #include <openssl/crypto.h>
+#include <zlib.h>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -510,7 +511,9 @@ xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
   return out;
 }
 
-}  // anonymousstd::vector<EnrichmentResponse>
+}  // anonymous namespace
+
+std::vector<EnrichmentResponse>
 Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
   if (downloadUrl.empty()) {
     throw Error(ErrorCategory::validation,

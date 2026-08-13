@@ -533,6 +533,15 @@ int main() {
     TEST_ASSERT(bulk_resp.id == "job-bulk-98765");
     TEST_ASSERT(bulk_resp.link == "https://api.xyo.financial/downloads/results-98765.tar.gz");
 
+    // Client-side batch size exceeds max_collection_size validation check
+    xyo::ClientConfig limited_cfg(test_api_key, server.base_url());
+    limited_cfg.max_collection_size = 1;
+    xyo::Client limited_client(std::move(limited_cfg));
+    expects_error(xyo::ErrorCategory::validation,
+                  "exceeds configured max_collection_size", [&] {
+                    limited_client.enrichTransactions(bulk_reqs);
+                  });
+
     // HTTP 422 Bulk Error mapping
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       return json_response(static_cast<web::http::status_code>(422),
@@ -831,6 +840,30 @@ int main() {
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
     }
+
+    // 10k. Malformed URL throws validation error
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
+      client.downloadEnrichmentCollection("http://[invalid-ipv6-address:9999");
+    });
+
+    // 10l. Tar header checksum mismatch
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      char hdr[512] = {};
+      std::strncpy(hdr, "corrupt_checksum.json", 100);
+      std::snprintf(hdr + 100, 8, "%07o", 0644);
+      std::snprintf(hdr + 124, 12, "%011zo", static_cast<std::size_t>(10));
+      hdr[156] = '0';
+      // Deliberately set incorrect checksum
+      std::snprintf(hdr + 148, 8, "%06o", 12345);
+
+      std::string corrupt_tar(hdr, 512);
+      corrupt_tar.append(512, '\0');
+      auto gz = gzip_compress(corrupt_tar);
+      return gzip_response(web::http::status_codes::OK, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "tar header checksum mismatch", [&] {
+      client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
+    });
   }
 
   server.stop();
