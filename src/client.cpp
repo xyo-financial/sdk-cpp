@@ -78,10 +78,47 @@ std::string to_string(EnrichmentStatus status) {
 // ClientConfig
 // ---------------------------------------------------------------------------
 
+ClientConfig::ClientConfig(ClientConfig&& other) noexcept
+    : api_key(std::move(other.api_key)),
+      base_url(std::move(other.base_url)),
+      connect_timeout_ms(other.connect_timeout_ms),
+      request_timeout_ms(other.request_timeout_ms),
+      max_collection_size(other.max_collection_size) {
+  if (other.api_key.capacity() > 0) {
+    volatile char* p = const_cast<volatile char*>(other.api_key.data());
+    for (std::size_t i = 0; i < other.api_key.capacity(); ++i) {
+      p[i] = '\0';
+    }
+  }
+}
+
+ClientConfig& ClientConfig::operator=(ClientConfig&& other) noexcept {
+  if (this != &other) {
+    if (api_key.capacity() > 0) {
+      volatile char* p = const_cast<volatile char*>(api_key.data());
+      for (std::size_t i = 0; i < api_key.capacity(); ++i) {
+        p[i] = '\0';
+      }
+    }
+    api_key = std::move(other.api_key);
+    base_url = std::move(other.base_url);
+    connect_timeout_ms = other.connect_timeout_ms;
+    request_timeout_ms = other.request_timeout_ms;
+    max_collection_size = other.max_collection_size;
+    if (other.api_key.capacity() > 0) {
+      volatile char* p = const_cast<volatile char*>(other.api_key.data());
+      for (std::size_t i = 0; i < other.api_key.capacity(); ++i) {
+        p[i] = '\0';
+      }
+    }
+  }
+  return *this;
+}
+
 ClientConfig::~ClientConfig() noexcept {
-  if (!api_key.empty()) {
+  if (api_key.capacity() > 0) {
     volatile char* p = const_cast<volatile char*>(api_key.data());
-    for (std::size_t i = 0; i < api_key.size(); ++i) {
+    for (std::size_t i = 0; i < api_key.capacity(); ++i) {
       p[i] = '\0';
     }
   }
@@ -314,6 +351,16 @@ std::string gunzip(const std::vector<uint8_t>& compressed) {
                      "downloadEnrichmentCollection: zlib inflateInit2 failed");
   }
 
+  // RAII Guard guarantees inflateEnd is called even if std::bad_alloc or custom Error is thrown.
+  struct ZStreamGuard {
+    z_stream* zs_ptr;
+    ~ZStreamGuard() {
+      if (zs_ptr) {
+        inflateEnd(zs_ptr);
+      }
+    }
+  } guard{&zs};
+
   zs.next_in  = const_cast<Bytef*>(compressed.data());
   zs.avail_in = static_cast<uInt>(compressed.size());
 
@@ -327,20 +374,17 @@ std::string gunzip(const std::vector<uint8_t>& compressed) {
     zs.avail_out = static_cast<uInt>(buf.size());
     ret = inflate(&zs, Z_NO_FLUSH);
     if (ret != Z_OK && ret != Z_STREAM_END) {
-      inflateEnd(&zs);
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: gzip decompression failed");
     }
     std::size_t decompressed_bytes = buf.size() - zs.avail_out;
     if (out.size() + decompressed_bytes > MAX_DECOMPRESSED_SIZE) {
-      inflateEnd(&zs);
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: decompressed data exceeds safety limit (100MB)");
     }
     out.append(buf.data(), decompressed_bytes);
   }
 
-  inflateEnd(&zs);
   return out;
 }
 
@@ -475,10 +519,24 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       to_sdk(full_url), http_cfg);
 
   web::http::http_request get_req(web::http::methods::GET);
-  // SSRF Protection: Only attach authorization header if target host matches the configured base_url host
+
+  // Protocol Downgrade & SSRF Protection:
+  // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
   web::uri target_uri(to_sdk(full_url));
   web::uri base_uri(api_cfg->getBaseUrl());
-  if (target_uri.host() == base_uri.host()) {
+  bool base_is_https   = (base_uri.scheme() == utility::conversions::to_string_t("https"));
+  bool target_is_https = (target_uri.scheme() == utility::conversions::to_string_t("https"));
+
+  if (base_is_https && !target_is_https) {
+    throw Error(ErrorCategory::validation,
+                "downloadEnrichmentCollection: refusing insecure HTTP download link for HTTPS client");
+  }
+
+  // 2. Only attach Authorization header if target host and port match the configured base_url
+  bool is_same_host = (target_uri.host() == base_uri.host());
+  bool is_same_port = (target_uri.port() == base_uri.port());
+
+  if (is_same_host && is_same_port) {
     const auto& default_headers = api_cfg->getDefaultHeaders();
     auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
     if (auth_it != default_headers.end()) {

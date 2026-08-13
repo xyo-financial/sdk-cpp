@@ -80,8 +80,8 @@ struct XYO_SDK_API ClientConfig {
 
   ClientConfig(const ClientConfig&) = delete;
   ClientConfig& operator=(const ClientConfig&) = delete;
-  ClientConfig(ClientConfig&&) noexcept = default;
-  ClientConfig& operator=(ClientConfig&&) noexcept = default;
+  ClientConfig(ClientConfig&&) noexcept;
+  ClientConfig& operator=(ClientConfig&&) noexcept;
   ~ClientConfig() noexcept;
 };
 
