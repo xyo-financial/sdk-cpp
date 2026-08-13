@@ -70,11 +70,22 @@ jobs:
       - name: Install System Dependencies (Windows via Conan)
         if: matrix.os == 'windows-2022'
         env:
+          # CL is read by cl.exe at startup — belt-and-suspenders alongside
+          # tools.build:cxxflags which the CCI Boost recipe forwards to b2.
           CL: "/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING /D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS"
         run: |
           pip install conan ninja
           conan profile detect --force
-          conan install . --output-folder=build --build=missing -s build_type=${{ matrix.build_type }} -s compiler.cppstd=17 -c tools.cmake.cmaketoolchain:generator="Ninja" -c tools.build:cxxflags="['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
+          # Patch the detected profile so cppstd=17 is the persistent default,
+          # not just a one-shot CLI flag that can be forgotten by callers.
+          sed -i 's/compiler.cppstd=.*/compiler.cppstd=17/' ~/.conan2/profiles/default
+          conan install . \
+            --output-folder=build \
+            --build=missing \
+            -s build_type=${{ matrix.build_type }} \
+            -s compiler.cppstd=17 \
+            -c tools.cmake.cmaketoolchain:generator="Ninja" \
+            -c "tools.build:cxxflags=['/D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '/D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
         shell: bash
 
       - name: Configure CMake
@@ -101,9 +112,21 @@ jobs:
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: '3.11'
+
+      - name: Cache Conan packages (validation)
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-linux-gcc-release-${{ hashFiles('conanfile.py') }}
+          restore-keys: |
+            conan-linux-gcc-release-
+
       - name: Install Conan
         run: |
           pip install conan
           conan profile detect --force
+
       - name: Test Conan Recipe Creation
-        run: conan create . --build=missing
+        # Pin cppstd explicitly — auto-detected gnu17 satisfies our >=17
+        # validate(), but we pin to avoid ambiguity and ensure reproducibility.
+        run: conan create . --build=missing -s compiler.cppstd=gnu17
