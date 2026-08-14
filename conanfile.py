@@ -21,6 +21,9 @@ class XyoSdkCppConan(ConanFile):
         "shared": False,
         # cpprestsdk configuration: disable websockets (only HTTP REST used)
         "cpprestsdk/*:with_websockets": False,
+        # Never allow fPIC to be True for Boost or cpprestsdk on Windows (prevents b2 -fPIC flag)
+        "boost/*:fPIC": False,
+        "cpprestsdk/*:fPIC": False,
         # Only build the minimal set of Boost compiled libraries required by cpprestsdk:
         # system, date_time, thread, chrono, atomic, regex, filesystem, random, context, container.
         # Disable all others to avoid MSVC build bugs and slash build times by 80%.
@@ -60,6 +63,9 @@ class XyoSdkCppConan(ConanFile):
     def configure(self):
         if self.options.shared or self.settings.os == "Windows":
             self.options.rm_safe("fPIC")
+        if self.settings.os == "Windows":
+            self.options["boost"].fPIC = False
+            self.options["cpprestsdk"].fPIC = False
 
     def validate(self):
         check_min_cppstd(self, "17")
