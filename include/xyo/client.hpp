@@ -1,7 +1,12 @@
-// Copyright (c) 2025 Syniol Limited
-// SPDX-License-Identifier: BSD-3-Clause
+// Copyright 2026 Syniol Limited
+// SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+
+// ---------------------------------------------------------------------------
+// XYO C++ SDK – idiomatic wrapper over the OpenAPI-generated cpp-restsdk client.
+// All HTTP / serialisation logic is delegated to the generated layer in openapi/.
+// ---------------------------------------------------------------------------
 
 #include <cstddef>
 #include <memory>
@@ -28,124 +33,122 @@
 
 namespace xyo {
 
+// ---------------------------------------------------------------------------
+// Domain types – purposely simple, independent of cpprestsdk internals.
+// ---------------------------------------------------------------------------
+
 struct XYO_SDK_API EnrichmentRequest {
-  std::string content;
-  std::string country_code;
+  std::string content;      ///< Payment description, max 128 chars.
+  std::string country_code; ///< ISO 3166-1 alpha-2 (e.g. "GB").
 };
 
 struct XYO_SDK_API EnrichmentResponse {
   std::string merchant;
   std::string description;
   std::vector<std::string> categories;
-  std::string logo;
-  std::optional<std::string> location;
-  std::optional<std::string> address;
+  std::string logo;                    ///< Base64-encoded PNG/JPEG.
+  std::optional<std::string> location; ///< May be absent if API returns null.
+  std::optional<std::string> address;  ///< May be absent if API returns null.
 };
 
-struct XYO_SDK_API EnrichTransactionCollectionResponse {
-  std::string id;
-  std::string link;
+struct XYO_SDK_API BulkEnrichmentResponse {
+  std::string id;   ///< Work-ID for the enrichment job.
+  std::string link; ///< URL to downloadable tar.gz results archive.
 };
 
-enum class EnrichmentCollectionStatus { ready, failed, pending };
+enum class XYO_SDK_API EnrichmentStatus { ready, failed, pending };
 
-[[nodiscard]] XYO_SDK_API std::string to_string(EnrichmentCollectionStatus status);
+[[nodiscard]] XYO_SDK_API std::string to_string(EnrichmentStatus status);
 
-struct XYO_SDK_API HttpRequest {
-  std::string method;
-  std::string url;
-  std::vector<std::pair<std::string, std::string>> headers;
-  std::string body;
-};
-
-struct XYO_SDK_API HttpResponse {
-  long status_code = 0;
-  std::string body;
-};
-
-class XYO_SDK_API HttpTransport {
- public:
-  virtual ~HttpTransport() = default;
-  virtual HttpResponse send(const HttpRequest& request) = 0;
-};
+// ---------------------------------------------------------------------------
+// Client configuration
+// ---------------------------------------------------------------------------
 
 struct XYO_SDK_API ClientConfig {
   std::string api_key;
-  std::string api_base_url = "https://api.xyo.financial";
-  std::shared_ptr<HttpTransport> http_transport;
+  std::string base_url = "https://api.xyo.financial";
 
-  // These limits are applied by the built-in libcurl transport. Response and
-  // JSON limits are also enforced when a custom transport is supplied.
-  long connect_timeout_ms = 5'000;
-  long request_timeout_ms = 30'000;
-  long low_speed_timeout_seconds = 15;
-  long low_speed_limit_bytes_per_second = 100;
-  std::size_t max_response_bytes = 1024 * 1024;
-  std::size_t max_json_depth = 64;
-  std::size_t max_json_nodes = 100'000;
+  // Optional timeout overrides (milliseconds).
+  /// @note Reserved for future granular socket connect timeouts; request_timeout_ms governs HTTP operations.
+  long connect_timeout_ms  = 5'000;
+  long request_timeout_ms  = 30'000;
   std::size_t max_collection_size = 1'000;
-  int max_retries = 3;
-
-  // Intended only for local development with the built-in transport. HTTPS
-  // remains mandatory unless this is explicitly enabled.
-  bool allow_insecure_http = false;
 
   ClientConfig() = default;
-  ClientConfig(std::string key, std::string url = "https://api.xyo.financial", std::shared_ptr<HttpTransport> transport = nullptr)
-      : api_key(std::move(key)), api_base_url(std::move(url)), http_transport(std::move(transport)) {}
+  explicit ClientConfig(std::string key,
+                        std::string url = "https://api.xyo.financial")
+      : api_key(std::move(key)), base_url(std::move(url)) {}
 
   ClientConfig(const ClientConfig&) = delete;
   ClientConfig& operator=(const ClientConfig&) = delete;
-  ClientConfig(ClientConfig&&) noexcept = default;
-  ClientConfig& operator=(ClientConfig&&) noexcept = default;
-
+  ClientConfig(ClientConfig&&) noexcept;
+  ClientConfig& operator=(ClientConfig&&) noexcept;
   ~ClientConfig() noexcept;
 };
 
-enum class ErrorCategory { validation, transport, http, parsing };
+// ---------------------------------------------------------------------------
+// SDK error type
+// ---------------------------------------------------------------------------
+
+enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing };
 
 class XYO_SDK_API Error : public std::runtime_error {
  public:
-  Error(ErrorCategory category, const std::string& message, long http_status_code = 0,
-        int transport_code = 0);
+  Error(ErrorCategory category, const std::string& message,
+        long http_status_code = 0, int transport_code = 0);
 
-  ErrorCategory category() const noexcept { return category_; }
-  long http_status_code() const noexcept { return http_status_code_; }
-  int transport_code() const noexcept { return transport_code_; }
+  ErrorCategory category()         const noexcept { return category_; }
+  long          http_status_code() const noexcept { return http_status_code_; }
+  int           transport_code()   const noexcept { return transport_code_; }
 
  private:
-  ErrorCategory category_ = ErrorCategory::validation;
-  long http_status_code_ = 0;
-  int transport_code_ = 0;
+  ErrorCategory category_         = ErrorCategory::validation;
+  long          http_status_code_ = 0;
+  int           transport_code_   = 0;
 };
 
-/**
- * @brief The Client class is the primary entry point for the XYO C++ SDK.
- * 
- * Thread safety: Client instances are safe to use concurrently from multiple
- * threads, provided that the underlying HttpTransport implementation is also
- * thread-safe (the default built-in CurlTransport is thread-safe).
- */
+// ---------------------------------------------------------------------------
+// Client – primary entry point.
+//
+// Thread-safety: safe to call concurrently; the underlying cpprestsdk
+// ApiClient is itself thread-safe.
+// ---------------------------------------------------------------------------
+
 class XYO_SDK_API Client {
  public:
   explicit Client(ClientConfig config);
 
-  Client(const Client&) = delete;
+  Client(const Client&)            = delete;
   Client& operator=(const Client&) = delete;
-  Client(Client&&) noexcept = default;
-  Client& operator=(Client&&) noexcept = default;
-
+  Client(Client&&) noexcept;
+  Client& operator=(Client&&) noexcept;
   ~Client() noexcept;
 
-  EnrichmentResponse enrich_transaction(const EnrichmentRequest& request) const;
-  EnrichTransactionCollectionResponse enrich_transaction_collection(
+  /// Enrich a single financial transaction (synchronous).
+  [[nodiscard]] EnrichmentResponse enrichTransaction(const EnrichmentRequest& request) const;
+
+  /// Enrich a batch of transactions asynchronously; returns a job handle.
+  [[nodiscard]] BulkEnrichmentResponse enrichTransactions(
       const std::vector<EnrichmentRequest>& requests) const;
-  EnrichmentCollectionStatus enrich_transaction_collection_status(
-      const std::string& id) const;
+
+  /// Poll the status of an async bulk enrichment job.
+  [[nodiscard]] EnrichmentStatus getEnrichmentStatus(const std::string& id) const;
+
+  /// Download and decode a completed enrichment collection archive.
+  ///
+  /// @param downloadUrl  The `link` field returned by enrichTransactions().
+  ///                     The server responds with an application/gzip
+  ///                     (tar.gz) body; each tar entry contains one
+  ///                     JSON-encoded EnrichmentResponse.
+  /// @returns            A vector of all EnrichmentResponse records found
+  ///                     inside the archive.
+  /// @throws xyo::Error  On HTTP errors, I/O failures, or parse failures.
+  [[nodiscard]] std::vector<EnrichmentResponse>
+  downloadEnrichmentCollection(const std::string& downloadUrl) const;
 
  private:
-  ClientConfig config_;
-  HttpResponse post(const std::string& path, const std::string& body) const;
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace xyo

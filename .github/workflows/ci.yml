@@ -2,6 +2,7 @@ name: Continuous Integration
 
 permissions:
   contents: read
+  actions: write
 
 on:
   push:
@@ -18,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-2022]
         build_type: [Debug, Release]
         compiler: [gcc, clang, msvc]
         exclude:
@@ -28,9 +29,9 @@ jobs:
             compiler: gcc
           - os: macos-latest
             compiler: msvc
-          - os: windows-latest
+          - os: windows-2022
             compiler: gcc
-          - os: windows-latest
+          - os: windows-2022
             compiler: clang
 
     steps:
@@ -40,19 +41,58 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev build-essential
+          sudo apt-get install -y libcpprest-dev libboost-all-dev libssl-dev zlib1g-dev build-essential
 
-      - name: Copy vcpkg.json for Windows Manifest Mode
-        if: matrix.os == 'windows-latest'
-        run: cp packaging/vcpkg/vcpkg.json .
+      - name: Install System Dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install cpprestsdk boost
+
+      - name: Setup MSVC Developer Command Prompt (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Conan packages (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-win-msvc-${{ matrix.build_type }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: |
+            conan-win-msvc-${{ matrix.build_type }}-
+
+      - name: Setup Python (Windows)
+        if: matrix.os == 'windows-2022'
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: '3.11'
+
+      - name: Install System Dependencies (Windows via Conan)
+        if: matrix.os == 'windows-2022'
+        env:
+          MSYS_NO_PATHCONV: "1"
+          CL: "-D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING -D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS"
+        run: |
+          pip install conan ninja
+          conan profile detect --force
+          # Patch the detected profile so cppstd=17 is the persistent default,
+          # not just a one-shot CLI flag that can be forgotten by callers.
+          sed -i 's/compiler.cppstd=.*/compiler.cppstd=17/' ~/.conan2/profiles/default
+          conan install . \
+            --output-folder=build \
+            --build=missing \
+            -s build_type=${{ matrix.build_type }} \
+            -s compiler.cppstd=17 \
+            -c tools.cmake.cmaketoolchain:generator="Ninja" \
+            -c "tools.build:cxxflags=['-D_SILENCE_STDEXT_ARR_ITERS_DEPRECATION_WARNING', '-D_SILENCE_ALL_MS_EXT_DEPRECATION_WARNINGS']"
         shell: bash
 
       - name: Configure CMake
         shell: bash
         run: |
           EXTRA_ARGS=""
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_INSTALLATION_ROOT}/scripts/buildsystems/vcpkg.cmake"
+          if [ "${{ matrix.os }}" = "windows-2022" ]; then
+            EXTRA_ARGS="-DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake -G Ninja"
           fi
           cmake -S . -B build $EXTRA_ARGS -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DXYO_BUILD_TESTS=ON
 
@@ -71,9 +111,21 @@ jobs:
         uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: '3.11'
+
+      - name: Cache Conan packages (validation)
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-linux-gcc-release-${{ hashFiles('conanfile.py') }}
+          restore-keys: |
+            conan-linux-gcc-release-
+
       - name: Install Conan
         run: |
           pip install conan
           conan profile detect --force
+
       - name: Test Conan Recipe Creation
-        run: conan create . --build=missing
+        # Pin cppstd explicitly — auto-detected gnu17 satisfies our >=17
+        # validate(), but we pin to avoid ambiguity and ensure reproducibility.
+        run: conan create . --build=missing -s compiler.cppstd=gnu17

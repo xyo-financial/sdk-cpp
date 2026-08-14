@@ -1,0 +1,6 @@
+---
+Checks: '-*,readability-*,bugprone-*,performance-*,-readability-identifier-length,-readability-magic-numbers'
+HeaderFilterRegex: '^(include|src|tests|example)/'
+FormatStyle: file
+WarningsAsErrors: ''
+...

@@ -1,531 +1,696 @@
+// Copyright 2026 Syniol Limited
+// SPDX-License-Identifier: Apache-2.0
+
+// ---------------------------------------------------------------------------
+// XYO C++ SDK – thin wrapper over the OpenAPI-generated cpp-restsdk client.
+// All actual HTTP and (de)serialisation is handled by the generated layer.
+// ---------------------------------------------------------------------------
+
 #include "xyo/client.hpp"
 
-#include <curl/curl.h>
+// Generated API + model headers (cpp-restsdk)
+#include "XYOSDK/api/EnrichmentApi.h"
+#include "XYOSDK/ApiClient.h"
+#include "XYOSDK/ApiConfiguration.h"
+#include "XYOSDK/ApiException.h"
+#include "XYOSDK/model/EnrichmentRequest.h"
+#include "XYOSDK/model/EnrichmentResponse.h"
+#include "XYOSDK/model/EnrichTransactions_request_inner.h"
+#include "XYOSDK/model/EnrichTransactionCollectionResponse.h"
+#include "XYOSDK/model/EnrichmentCollectionStatusResponse.h"
 
-#include <algorithm>
+#include <cpprest/details/basic_types.h>
+#include <cpprest/http_client.h>
+#include <cpprest/json.h>
+#include <boost/optional.hpp>
+#include <boost/none.hpp>
+#include <openssl/crypto.h>
+#include <zlib.h>
 #include <cctype>
 #include <chrono>
-#include <iomanip>
-#include <map>
-#include <mutex>
-#include <random>
-#include <sstream>
-#include <thread>
-#include <utility>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace xyo {
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 namespace {
 
-struct Json {
-  enum class Kind { null_value, string, scalar, array, object } kind = Kind::null_value;
-  std::string text;
-  std::vector<Json> array;
-  std::map<std::string, Json> object;
-};
-
-class JsonParser {
- public:
-  explicit JsonParser(const std::string& input, std::size_t max_depth = 64, std::size_t max_nodes = 100'000)
-      : input_(input), max_depth_(max_depth), max_nodes_(max_nodes) {}
-
-  Json parse() {
-    Json result = value();
-    whitespace();
-    if (position_ != input_.size()) fail("trailing content");
-    return result;
-  }
-
- private:
-  const std::string& input_;
-  std::size_t position_ = 0;
-  std::size_t max_depth_;
-  std::size_t max_nodes_;
-  std::size_t current_depth_ = 0;
-  std::size_t nodes_parsed_ = 0;
-
-  [[noreturn]] void fail(const std::string& message) const {
-    throw Error(ErrorCategory::parsing, "invalid JSON response at byte " + std::to_string(position_) +
-                ": " + message);
-  }
-
-  void whitespace() {
-    while (position_ < input_.size() &&
-           std::isspace(static_cast<unsigned char>(input_[position_]))) ++position_;
-  }
-
-  bool consume(char expected) {
-    whitespace();
-    if (position_ < input_.size() && input_[position_] == expected) {
-      ++position_;
-      return true;
-    }
-    return false;
-  }
-
-  void increment_nodes() {
-    ++nodes_parsed_;
-    if (nodes_parsed_ > max_nodes_) {
-      fail("exceeded maximum JSON node limit of " + std::to_string(max_nodes_));
-    }
-  }
-
-  void increment_depth() {
-    ++current_depth_;
-    if (current_depth_ > max_depth_) {
-      fail("exceeded maximum JSON depth limit of " + std::to_string(max_depth_));
-    }
-  }
-
-  void decrement_depth() {
-    if (current_depth_ > 0) {
-      --current_depth_;
-    }
-  }
-
-  Json value() {
-    increment_nodes();
-    whitespace();
-    if (position_ >= input_.size()) fail("expected a value");
-    if (input_[position_] == '"') {
-      Json result;
-      result.kind = Json::Kind::string;
-      result.text = string();
-      return result;
-    }
-    if (input_[position_] == '{') return object();
-    if (input_[position_] == '[') return array();
-    if (input_.compare(position_, 4, "null") == 0) {
-      position_ += 4;
-      return {};
-    }
-    if (input_.compare(position_, 4, "true") == 0) return scalar(4);
-    if (input_.compare(position_, 5, "false") == 0) return scalar(5);
-    if (input_[position_] == '-' ||
-        std::isdigit(static_cast<unsigned char>(input_[position_]))) return number();
-    fail("unsupported value");
-  }
-
-  Json scalar(std::size_t length) {
-    Json result;
-    result.kind = Json::Kind::scalar;
-    result.text = input_.substr(position_, length);
-    position_ += length;
-    return result;
-  }
-
-  Json number() {
-    std::size_t start = position_;
-    if (input_[position_] == '-') ++position_;
-    if (position_ >= input_.size()) fail("invalid number");
-    if (input_[position_] == '0') ++position_;
-    else {
-      if (!std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    if (position_ < input_.size() && input_[position_] == '.') {
-      ++position_;
-      if (position_ >= input_.size() ||
-          !std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    if (position_ < input_.size() && (input_[position_] == 'e' || input_[position_] == 'E')) {
-      ++position_;
-      if (position_ < input_.size() && (input_[position_] == '+' || input_[position_] == '-'))
-        ++position_;
-      if (position_ >= input_.size() ||
-          !std::isdigit(static_cast<unsigned char>(input_[position_]))) fail("invalid number");
-      while (position_ < input_.size() &&
-             std::isdigit(static_cast<unsigned char>(input_[position_]))) ++position_;
-    }
-    return scalar_from_range(start);
-  }
-
-  Json scalar_from_range(std::size_t start) {
-    Json result;
-    result.kind = Json::Kind::scalar;
-    result.text = input_.substr(start, position_ - start);
-    return result;
-  }
-
-  std::string string() {
-    if (input_[position_++] != '"') fail("expected string");
-    std::string result;
-    while (position_ < input_.size()) {
-      char c = input_[position_++];
-      if (c == '"') return result;
-      if (c != '\\') {
-        result += c;
-        continue;
-      }
-      if (position_ >= input_.size()) fail("unfinished escape");
-      switch (input_[position_++]) {
-        case '"': result += '"'; break;
-        case '\\': result += '\\'; break;
-        case '/': result += '/'; break;
-        case 'b': result += '\b'; break;
-        case 'f': result += '\f'; break;
-        case 'n': result += '\n'; break;
-        case 'r': result += '\r'; break;
-        case 't': result += '\t'; break;
-        case 'u': {
-          unsigned int codepoint = hex_quad();
-          if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
-            if (position_ + 2 > input_.size() || input_[position_] != '\\' ||
-                input_[position_ + 1] != 'u') fail("invalid Unicode surrogate pair");
-            position_ += 2;
-            unsigned int low = hex_quad();
-            if (low < 0xDC00 || low > 0xDFFF) fail("invalid Unicode surrogate pair");
-            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
-          } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
-            fail("unexpected low Unicode surrogate");
-          }
-          append_utf8(result, codepoint);
-          break;
-        }
-        default: fail("unsupported escape");
-      }
-    }
-    fail("unterminated string");
-  }
-
-  unsigned int hex_quad() {
-    if (position_ + 4 > input_.size()) fail("unfinished Unicode escape");
-    unsigned int value = 0;
-    for (int i = 0; i < 4; ++i) {
-      char c = input_[position_++];
-      value <<= 4;
-      if (c >= '0' && c <= '9') value += static_cast<unsigned int>(c - '0');
-      else if (c >= 'a' && c <= 'f') value += static_cast<unsigned int>(c - 'a' + 10);
-      else if (c >= 'A' && c <= 'F') value += static_cast<unsigned int>(c - 'A' + 10);
-      else fail("invalid Unicode escape");
-    }
-    return value;
-  }
-
-  static void append_utf8(std::string& output, unsigned int codepoint) {
-    if (codepoint <= 0x7F) output += static_cast<char>(codepoint);
-    else if (codepoint <= 0x7FF) {
-      output += static_cast<char>(0xC0 | (codepoint >> 6));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else if (codepoint <= 0xFFFF) {
-      output += static_cast<char>(0xE0 | (codepoint >> 12));
-      output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    } else {
-      output += static_cast<char>(0xF0 | (codepoint >> 18));
-      output += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
-      output += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
-      output += static_cast<char>(0x80 | (codepoint & 0x3F));
-    }
-  }
-
-  Json array() {
-    increment_depth();
-    ++position_;
-    Json result;
-    result.kind = Json::Kind::array;
-    if (consume(']')) {
-      decrement_depth();
-      return result;
-    }
-    do { result.array.push_back(value()); } while (consume(','));
-    if (!consume(']')) fail("expected ']'");
-    decrement_depth();
-    return result;
-  }
-
-  Json object() {
-    increment_depth();
-    ++position_;
-    Json result;
-    result.kind = Json::Kind::object;
-    if (consume('}')) {
-      decrement_depth();
-      return result;
-    }
-    do {
-      whitespace();
-      if (position_ >= input_.size() || input_[position_] != '"') fail("expected key");
-      std::string key = string();
-      if (!consume(':')) fail("expected ':'");
-      auto insertion = result.object.emplace(std::move(key), value());
-      if (!insertion.second) {
-        fail("duplicate key in JSON object");
-      }
-    } while (consume(','));
-    if (!consume('}')) fail("expected '}'");
-    decrement_depth();
-    return result;
-  }
-};
-
-const Json& required(const Json& object, const std::string& name, Json::Kind kind) {
-  if (object.kind != Json::Kind::object) throw Error(ErrorCategory::validation, "JSON response must be an object");
-  auto item = object.object.find(name);
-  if (item == object.object.end() || item->second.kind != kind)
-    throw Error(ErrorCategory::validation, "JSON response field '" + name + "' is missing or has the wrong type");
-  return item->second;
+/// Convert a cpprestsdk string_t to std::string portably.
+inline std::string to_std(const utility::string_t& s) {
+#ifdef _UTF16_STRINGS
+  return utility::conversions::to_utf8string(s);
+#else
+  return s;
+#endif
 }
 
-std::optional<std::string> optional_string(const Json& object, const std::string& name) {
-  auto item = object.object.find(name);
-  if (item == object.object.end() || item->second.kind == Json::Kind::null_value)
-    return std::nullopt;
-  if (item->second.kind != Json::Kind::string)
-    throw Error(ErrorCategory::validation, "JSON response field '" + name + "' has the wrong type");
-  return item->second.text;
+/// Convert std::string to cpprestsdk string_t portably.
+inline utility::string_t to_sdk(const std::string& s) {
+#ifdef _UTF16_STRINGS
+  return utility::conversions::to_string_t(s);
+#else
+  return s;
+#endif
 }
-
-std::string json_string(const std::string& input) {
-  std::string output;
-  output.reserve(input.size() + 8);
-  output += '"';
-  for (unsigned char c : input) {
-    switch (c) {
-      case '"': output += "\\\""; break;
-      case '\\': output += "\\\\"; break;
-      case '\b': output += "\\b"; break;
-      case '\f': output += "\\f"; break;
-      case '\n': output += "\\n"; break;
-      case '\r': output += "\\r"; break;
-      case '\t': output += "\\t"; break;
-      default:
-        if (c < 0x20) {
-          char buf[7];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<int>(c));
-          output += buf;
-        } else {
-          output += c;
-        }
-    }
-  }
-  output += '"';
-  return output;
-}
-
-std::string request_json(const EnrichmentRequest& request) {
-  return "{\"content\":" + json_string(request.content) +
-         ",\"countryCode\":" + json_string(request.country_code) + "}";
-}
-
-struct WriteContext {
-  std::string* body;
-  std::size_t max_bytes;
-  bool limit_exceeded = false;
-};
-
-size_t write_body(char* data, size_t size, size_t count, void* target) {
-  auto* context = static_cast<WriteContext*>(target);
-  size_t bytes = size * count;
-  if (context->body->size() + bytes > context->max_bytes) {
-    context->limit_exceeded = true;
-    return 0;
-  }
-  context->body->append(data, bytes);
-  return bytes;
-}
-
-class CurlTransport final : public HttpTransport {
- private:
-  long connect_timeout_ms_;
-  long request_timeout_ms_;
-  long low_speed_timeout_seconds_;
-  long low_speed_limit_bytes_per_second_;
-  std::size_t max_response_bytes_;
-  bool allow_insecure_http_;
-
- public:
-  explicit CurlTransport(const ClientConfig& config)
-      : connect_timeout_ms_(config.connect_timeout_ms),
-        request_timeout_ms_(config.request_timeout_ms),
-        low_speed_timeout_seconds_(config.low_speed_timeout_seconds),
-        low_speed_limit_bytes_per_second_(config.low_speed_limit_bytes_per_second),
-        max_response_bytes_(config.max_response_bytes),
-        allow_insecure_http_(config.allow_insecure_http) {}
-
-  HttpResponse send(const HttpRequest& request) override {
-    static std::once_flag init;
-    std::call_once(init, [] {
-      if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
-        throw Error(ErrorCategory::transport, "failed to initialize libcurl");
-    });
-    CURL* curl = curl_easy_init();
-    if (!curl) throw Error(ErrorCategory::transport, "failed to create libcurl request");
-
-    auto curl_deleter = [](CURL* c) { if (c) curl_easy_cleanup(c); };
-    std::unique_ptr<CURL, decltype(curl_deleter)> curl_guard(curl, curl_deleter);
-
-    struct curl_slist* headers = nullptr;
-    for (const auto& header : request.headers) {
-      std::string header_str = header.first + ": " + header.second;
-      headers = curl_slist_append(headers, header_str.c_str());
-    }
-    auto headers_deleter = [](curl_slist* h) { if (h) curl_slist_free_all(h); };
-    std::unique_ptr<curl_slist, decltype(headers_deleter)> headers_guard(headers, headers_deleter);
-
-    HttpResponse response;
-    curl_easy_setopt(curl, CURLOPT_URL, request.url.c_str());
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, request.body.c_str());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(request.body.size()));
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, connect_timeout_ms_);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, request_timeout_ms_);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, low_speed_timeout_seconds_);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, low_speed_limit_bytes_per_second_);
-
-    if (allow_insecure_http_) {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    } else {
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-    }
-
-    WriteContext context{&response.body, max_response_bytes_, false};
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_body);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &context);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "xyo-sdk-cpp/1.1.1");
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-
-    CURLcode code = curl_easy_perform(curl);
-    if (code == CURLE_OK) {
-      curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response.status_code);
-    }
-
-    if (code != CURLE_OK) {
-      std::string error = curl_easy_strerror(code);
-      if (code == CURLE_WRITE_ERROR && context.limit_exceeded) {
-        throw Error(ErrorCategory::transport, "HTTP request failed: response size exceeded maximum limit of " + std::to_string(max_response_bytes_) + " bytes", 0, static_cast<int>(code));
-      }
-      throw Error(ErrorCategory::transport, "HTTP request failed: " + error, 0, static_cast<int>(code));
-    }
-    return response;
-  }
-};
 
 }  // namespace
 
-std::string to_string(EnrichmentCollectionStatus status) {
+// ---------------------------------------------------------------------------
+// Public free functions
+// ---------------------------------------------------------------------------
+
+std::string to_string(EnrichmentStatus status) {
   switch (status) {
-    case EnrichmentCollectionStatus::ready: return "READY";
-    case EnrichmentCollectionStatus::failed: return "FAILED";
-    case EnrichmentCollectionStatus::pending: return "PENDING";
+    case EnrichmentStatus::ready:   return "READY";
+    case EnrichmentStatus::failed:  return "FAILED";
+    case EnrichmentStatus::pending: return "PENDING";
   }
-  throw Error(ErrorCategory::validation, "unknown enrichment collection status");
+  return "UNKNOWN";
 }
 
-Client::Client(ClientConfig config) : config_(std::move(config)) {
-  if (config_.api_key.empty()) throw Error(ErrorCategory::validation, "api_key must not be empty");
-  if (config_.api_base_url.empty()) throw Error(ErrorCategory::validation, "api_base_url must not be empty");
-  while (config_.api_base_url.size() > 1 && config_.api_base_url.back() == '/')
-    config_.api_base_url.pop_back();
-  if (!config_.allow_insecure_http) {
-    if (config_.api_base_url.rfind("https://", 0) != 0) {
-      throw Error(ErrorCategory::validation, "api_base_url must use HTTPS unless allow_insecure_http is enabled");
-    }
+namespace {
+
+void secure_erase(std::string& str) noexcept {
+  if (str.capacity() > 0) {
+    OPENSSL_cleanse(str.data(), str.capacity());
+    str.clear();
   }
-  if (!config_.http_transport) config_.http_transport = std::make_shared<CurlTransport>(config_);
 }
 
-Client::~Client() noexcept {
-  // config_.api_key is wiped by ClientConfig::~ClientConfig()
+}  // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// ClientConfig
+// ---------------------------------------------------------------------------
+
+ClientConfig::ClientConfig(ClientConfig&& other) noexcept
+    : api_key(std::move(other.api_key)),
+      base_url(std::move(other.base_url)),
+      connect_timeout_ms(other.connect_timeout_ms),
+      request_timeout_ms(other.request_timeout_ms),
+      max_collection_size(other.max_collection_size) {}
+
+ClientConfig& ClientConfig::operator=(ClientConfig&& other) noexcept {
+  if (this != &other) {
+    secure_erase(api_key);
+    api_key = std::move(other.api_key);
+    base_url = std::move(other.base_url);
+    connect_timeout_ms = other.connect_timeout_ms;
+    request_timeout_ms = other.request_timeout_ms;
+    max_collection_size = other.max_collection_size;
+  }
+  return *this;
 }
-
-HttpResponse Client::post(const std::string& path, const std::string& body) const {
-  HttpRequest request{"POST", config_.api_base_url + path,
-                      {{"Content-Type", "application/json"}, {"Accept", "application/json"},
-                       {"Authorization", "Bearer " + config_.api_key}}, body};
-  HttpResponse response;
-  int attempts = 0;
-  int max_attempts = (std::max)(1, config_.max_retries + 1);
-
-  while (attempts < max_attempts) {
-    response = config_.http_transport->send(request);
-    
-    if (response.status_code == 429 || response.status_code >= 500) {
-      attempts++;
-      if (attempts < max_attempts) {
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_int_distribution<> jitter(0, 100);
-        long delay_ms = (1L << attempts) * 100 + jitter(gen);
-        std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-        continue;
-      }
-    }
-    break;
-  }
-
-  if (response.status_code != 200) {
-    std::string error_msg = "XYO API returned status code " + std::to_string(response.status_code);
-    if (!response.body.empty()) {
-      error_msg += ": " + response.body;
-    }
-    throw Error(ErrorCategory::http, error_msg, response.status_code);
-  }
-  return response;
-}
-
-EnrichmentResponse Client::enrich_transaction(const EnrichmentRequest& request) const {
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transaction", request_json(request)).body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  EnrichmentResponse response;
-  response.merchant = required(root, "merchant", Json::Kind::string).text;
-  response.description = required(root, "description", Json::Kind::string).text;
-  response.logo = required(root, "logo", Json::Kind::string).text;
-  for (const auto& category : required(root, "categories", Json::Kind::array).array) {
-    if (category.kind != Json::Kind::string) throw Error(ErrorCategory::validation, "categories must contain strings");
-    response.categories.push_back(category.text);
-  }
-  response.location = optional_string(root, "location");
-  response.address = optional_string(root, "address");
-  return response;
-}
-
-EnrichTransactionCollectionResponse Client::enrich_transaction_collection(
-    const std::vector<EnrichmentRequest>& requests) const {
-  if (requests.size() > config_.max_collection_size) {
-    throw Error(ErrorCategory::validation, "collection size exceeds max_collection_size limit of " + std::to_string(config_.max_collection_size));
-  }
-  std::string body = "[";
-  for (std::size_t i = 0; i < requests.size(); ++i) {
-    if (i) body += ',';
-    body += request_json(requests[i]);
-  }
-  body += ']';
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transactions", body).body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  return {required(root, "id", Json::Kind::string).text,
-          required(root, "link", Json::Kind::string).text};
-}
-
-EnrichmentCollectionStatus Client::enrich_transaction_collection_status(
-    const std::string& id) const {
-  if (id.empty()) throw Error(ErrorCategory::validation, "id must not be empty");
-  for (char c : id) {
-    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_') {
-      throw Error(ErrorCategory::validation, "invalid transaction collection ID format");
-    }
-  }
-  // NOTE: XYO API status endpoint requires a POST request with an empty body
-  Json root = JsonParser(post("/v1/ai/finance/enrichment/transactions/status/" + id, "").body,
-                         config_.max_json_depth, config_.max_json_nodes).parse();
-  const std::string& status = required(root, "status", Json::Kind::string).text;
-  if (status == "READY") return EnrichmentCollectionStatus::ready;
-  if (status == "FAILED") return EnrichmentCollectionStatus::failed;
-  if (status == "PENDING") return EnrichmentCollectionStatus::pending;
-  throw Error(ErrorCategory::validation, "unknown enrichment collection status: " + status);
-}
-
-Error::Error(ErrorCategory category, const std::string& message, long http_status_code, int transport_code)
-    : std::runtime_error(message), category_(category), http_status_code_(http_status_code), transport_code_(transport_code) {}
 
 ClientConfig::~ClientConfig() noexcept {
-  std::fill(api_key.begin(), api_key.end(), '\0');
+  secure_erase(api_key);
+}
+
+// ---------------------------------------------------------------------------
+// Error
+// ---------------------------------------------------------------------------
+
+Error::Error(ErrorCategory category, const std::string& message,
+             long http_status_code, int transport_code)
+    : std::runtime_error(message),
+      category_(category),
+      http_status_code_(http_status_code),
+      transport_code_(transport_code) {}
+
+// ---------------------------------------------------------------------------
+// Client::Impl – owns the generated ApiClient and EnrichmentApi.
+// ---------------------------------------------------------------------------
+
+struct Client::Impl {
+  ClientConfig                            config;
+  std::shared_ptr<xyo_api::ApiClient>     api_client;
+  std::shared_ptr<xyo_api::EnrichmentApi> enrichment_api;
+
+  explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {
+    auto configuration = std::make_shared<xyo_api::ApiConfiguration>();
+    configuration->setBaseUrl(to_sdk(config.base_url));
+    // Bearer-token authentication: set the Authorization header.
+    configuration->getDefaultHeaders()[to_sdk("Authorization")] =
+        to_sdk("Bearer " + config.api_key);
+
+    web::http::client::http_client_config http_config;
+    if (config.request_timeout_ms > 0) {
+      http_config.set_timeout(utility::seconds((std::max)(1L, (config.request_timeout_ms + 999) / 1000)));
+    }
+    configuration->setHttpConfig(http_config);
+
+    api_client = std::make_shared<xyo_api::ApiClient>(configuration);
+    enrichment_api = std::make_shared<xyo_api::EnrichmentApi>(api_client);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+Client::Client(ClientConfig config) {
+  if (config.api_key.empty()) {
+    throw Error(ErrorCategory::validation, "api_key must not be empty");
+  }
+  impl_ = std::make_unique<Impl>(std::move(config));
+}
+
+Client::Client(Client&&) noexcept = default;
+Client& Client::operator=(Client&&) noexcept = default;
+Client::~Client() noexcept = default;
+
+namespace {
+
+inline void validate_request(const EnrichmentRequest& req, const char* op_name) {
+  if (req.content.empty()) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request content must not be empty");
+  }
+  if (req.content.size() > 128) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request content exceeds maximum length of 128 characters");
+  }
+  if (req.country_code.empty()) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request country_code must not be empty");
+  }
+  if (req.country_code.size() != 2) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request country_code must be a 2-letter ISO 3166-1 alpha-2 code");
+  }
+}
+
+}  // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// enrichTransaction – single transaction, synchronous.
+// ---------------------------------------------------------------------------
+EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) const {
+  validate_request(request, "enrichTransaction");
+
+  auto req = std::make_shared<xyo_model::EnrichmentRequest>();
+  req->setContent(to_sdk(request.content));
+  req->setCountryCode(to_sdk(request.country_code));
+
+  std::shared_ptr<xyo_model::EnrichmentResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->enrichTransaction(boost::optional<std::shared_ptr<xyo_model::EnrichmentRequest>>(req))
+               .get();  // block until the async pplx::task resolves
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from enrichTransaction: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from enrichTransaction: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from enrichTransaction: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
+  }
+
+  if (!resp) {
+    throw Error(ErrorCategory::parsing, "enrichTransaction: null response");
+  }
+
+  EnrichmentResponse out;
+  out.merchant    = to_std(resp->getMerchant());
+  out.description = to_std(resp->getDescription());
+
+  for (const auto& cat : resp->getCategories()) {
+    out.categories.push_back(to_std(cat));
+  }
+
+  out.logo = to_std(resp->getLogo());
+
+  if (resp->locationIsSet()) {
+    out.location = to_std(resp->getLocation());
+  }
+  if (resp->addressIsSet()) {
+    out.address = to_std(resp->getAddress());
+  }
+
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// enrichTransactions – bulk, async (returns a job handle).
+// ---------------------------------------------------------------------------
+BulkEnrichmentResponse Client::enrichTransactions(
+    const std::vector<EnrichmentRequest>& requests) const {
+
+  if (requests.empty()) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: request list must not be empty");
+  }
+  if (requests.size() > impl_->config.max_collection_size) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(requests.size()) +
+                " exceeds configured max_collection_size of " +
+                std::to_string(impl_->config.max_collection_size));
+  }
+
+  std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>> items;
+  items.reserve(requests.size());
+  for (const auto& r : requests) {
+    validate_request(r, "enrichTransactions");
+    auto item = std::make_shared<xyo_model::EnrichTransactions_request_inner>();
+    item->setContent(to_sdk(r.content));
+    item->setCountryCode(to_sdk(r.country_code));
+    items.push_back(std::move(item));
+  }
+
+  std::shared_ptr<xyo_model::EnrichTransactionCollectionResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->enrichTransactions(
+                   boost::none,  // x-api-user header (optional, unused)
+                   boost::optional<std::vector<std::shared_ptr<xyo_model::EnrichTransactions_request_inner>>>(items))
+               .get();
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from enrichTransactions: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from enrichTransactions: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from enrichTransactions: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
+  }
+
+  if (!resp) {
+    throw Error(ErrorCategory::parsing, "enrichTransactions: null response");
+  }
+
+  return BulkEnrichmentResponse{
+      to_std(resp->getId()),
+      to_std(resp->getLink()),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// getEnrichmentStatus – poll the status of an async bulk job.
+// ---------------------------------------------------------------------------
+EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
+  if (id.empty()) {
+    throw Error(ErrorCategory::validation,
+                "getEnrichmentStatus: id must not be empty");
+  }
+
+  std::shared_ptr<xyo_model::EnrichmentCollectionStatusResponse> resp;
+  try {
+    resp = impl_->enrichment_api
+               ->getEnrichmentStatus(
+                   to_sdk(id),
+                   boost::none)  // x-api-user header (optional, unused)
+               .get();
+  } catch (const xyo_api::ApiException& e) {
+    throw Error(ErrorCategory::http,
+                "HTTP error from getEnrichmentStatus: " + std::string(e.what()),
+                e.error_code().value());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::parsing,
+                "Parsing error from getEnrichmentStatus: " + std::string(e.what()));
+  } catch (const web::json::json_exception& e) {
+    throw Error(ErrorCategory::parsing,
+                "JSON parsing error from getEnrichmentStatus: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::transport, e.what());
+  }
+
+  if (!resp || !resp->statusIsSet()) {
+    throw Error(ErrorCategory::parsing, "getEnrichmentStatus: null response");
+  }
+
+  switch (resp->getStatus()) {
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::READY:
+      return EnrichmentStatus::ready;
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::FAILED:
+      return EnrichmentStatus::failed;
+    case xyo_model::EnrichmentCollectionStatusResponse::StatusEnum::PENDING:
+      return EnrichmentStatus::pending;
+  }
+
+  throw Error(ErrorCategory::parsing,
+              "getEnrichmentStatus: unrecognised status value");
+}
+
+// ---------------------------------------------------------------------------
+// downloadEnrichmentCollection – GET tar.gz, decompress, parse JSON entries.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::size_t MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100 MB safety limit
+constexpr std::size_t TAR_BLOCK_SIZE        = 512;
+constexpr std::size_t TAR_SIZE_OFFSET       = 124;
+constexpr std::size_t TAR_SIZE_LEN          = 12;
+constexpr std::size_t TAR_TYPE_OFFSET       = 156;
+
+/// Decompress a gzip byte blob into a std::string using zlib.
+std::string gunzip(const std::vector<uint8_t>& compressed) {
+  if (compressed.empty()) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: empty compressed data");
+  }
+  if (compressed.size() > static_cast<std::size_t>((std::numeric_limits<uInt>::max)())) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: compressed payload exceeds maximum supported size");
+  }
+
+  // inflateInit2 with windowBits=31 enables automatic gzip header detection.
+  z_stream zs{};
+  if (inflateInit2(&zs, 31) != Z_OK) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     "downloadEnrichmentCollection: zlib inflateInit2 failed");
+  }
+
+  // RAII Guard guarantees inflateEnd is called even if std::bad_alloc or custom Error is thrown.
+  struct ZStreamGuard {
+    z_stream* zs_ptr;
+    ~ZStreamGuard() {
+      if (zs_ptr) {
+        inflateEnd(zs_ptr);
+      }
+    }
+  } guard{&zs};
+
+  zs.next_in  = const_cast<Bytef*>(compressed.data());
+  zs.avail_in = static_cast<uInt>(compressed.size());
+
+  std::string out;
+  out.reserve(compressed.size() * 4);
+
+  std::vector<char> buf(65536);
+  int ret = Z_OK;
+  while (ret != Z_STREAM_END) {
+    zs.next_out  = reinterpret_cast<Bytef*>(buf.data());
+    zs.avail_out = static_cast<uInt>(buf.size());
+    ret = inflate(&zs, Z_NO_FLUSH);
+    if (ret != Z_OK && ret != Z_STREAM_END) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: gzip decompression failed");
+    }
+    std::size_t decompressed_bytes = buf.size() - zs.avail_out;
+    if (out.size() + decompressed_bytes > MAX_DECOMPRESSED_SIZE) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: decompressed data exceeds safety limit (100MB)");
+    }
+    out.append(buf.data(), decompressed_bytes);
+  }
+
+  return out;
+}
+
+/// Walk POSIX ustar/GNU tar blocks and return each regular-file's content as string_view.
+/// Each block is 512 bytes; the header occupies block 0, data follows.
+std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
+  std::vector<std::string_view> entries;
+  const std::size_t total = tar_bytes.size();
+  std::size_t offset = 0;
+
+  while (offset + TAR_BLOCK_SIZE <= total) {
+    const char* hdr = tar_bytes.data() + offset;
+
+    // Two consecutive all-zero blocks mark end-of-archive.
+    bool all_zero = true;
+    for (std::size_t i = 0; i < TAR_BLOCK_SIZE && all_zero; ++i) {
+      if (hdr[i] != '\0') all_zero = false;
+    }
+    if (all_zero) break;
+
+    // Verify 8-byte octal header checksum at offset 148
+    unsigned int expected_chk = 0;
+    for (std::size_t i = 0; i < TAR_BLOCK_SIZE; ++i) {
+      if (i >= 148 && i < 156) {
+        expected_chk += ' ';
+      } else {
+        expected_chk += static_cast<unsigned char>(hdr[i]);
+      }
+    }
+    char chk_field[9] = {};
+    std::memcpy(chk_field, hdr + 148, 8);
+    unsigned int actual_chk = static_cast<unsigned int>(std::strtoul(chk_field, nullptr, 8));
+    if (actual_chk != 0 && actual_chk != expected_chk) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: tar header checksum mismatch");
+    }
+
+    // Filename is at offset 0 (100 bytes, NUL-padded).
+    // Typeflag is at offset 156: '0' or '\0' = regular file.
+    char typeflag = hdr[TAR_TYPE_OFFSET];
+
+    // File size is stored as an octal ASCII string at offset 124 (12 bytes).
+    char size_field[TAR_SIZE_LEN + 1] = {};
+    std::memcpy(size_field, hdr + TAR_SIZE_OFFSET, TAR_SIZE_LEN);
+    std::size_t file_size = static_cast<std::size_t>(std::strtoull(size_field, nullptr, 8));
+
+    offset += TAR_BLOCK_SIZE;  // advance past header block
+
+    if ((typeflag == '0' || typeflag == '\0') && file_size > 0) {
+      // Check for integer overflow on file boundary
+      if (file_size > total || offset > total - file_size) {
+        throw xyo::Error(xyo::ErrorCategory::parsing,
+                         "downloadEnrichmentCollection: truncated tar archive");
+      }
+      entries.emplace_back(tar_bytes.data() + offset, file_size);
+    }
+
+    // Round file_size up to the next 512-byte boundary with overflow protection
+    std::size_t padded = file_size + (TAR_BLOCK_SIZE - 1);
+    if (padded < file_size) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: tar size padding overflow");
+    }
+    padded &= ~static_cast<std::size_t>(TAR_BLOCK_SIZE - 1);
+
+    // Safe boundary check without underflow risk
+    if (padded > total - offset) {
+      offset = total;
+    } else {
+      offset += padded;
+    }
+  }
+  return entries;
+}
+
+/// Parse a single JSON-encoded EnrichmentResponse entry string.
+xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
+  web::json::value jv;
+  try {
+    jv = web::json::value::parse(to_sdk(std::string(json_view)));
+  } catch (const std::exception& e) {
+    throw xyo::Error(xyo::ErrorCategory::parsing,
+                     std::string("downloadEnrichmentCollection: JSON parse error: ") + e.what());
+  }
+
+  auto get_str = [&](const char* key) -> std::string {
+    auto k = utility::conversions::to_string_t(key);
+    if (!jv.has_field(k) || !jv.at(k).is_string()) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       std::string("downloadEnrichmentCollection: missing field: ") + key);
+    }
+    return utility::conversions::to_utf8string(jv.at(k).as_string());
+  };
+
+  xyo::EnrichmentResponse out;
+  out.merchant    = get_str("merchant");
+  out.description = get_str("description");
+  out.logo        = get_str("logo");
+
+  auto cats_key = utility::conversions::to_string_t("categories");
+  if (jv.has_field(cats_key) && jv.at(cats_key).is_array()) {
+    for (const auto& cat : jv.at(cats_key).as_array()) {
+      if (cat.is_string()) {
+        out.categories.push_back(utility::conversions::to_utf8string(cat.as_string()));
+      }
+    }
+  }
+
+  auto loc_key = utility::conversions::to_string_t("location");
+  if (jv.has_field(loc_key) && jv.at(loc_key).is_string()) {
+    out.location = utility::conversions::to_utf8string(jv.at(loc_key).as_string());
+  }
+
+  auto addr_key = utility::conversions::to_string_t("address");
+  if (jv.has_field(addr_key) && jv.at(addr_key).is_string()) {
+    out.address = utility::conversions::to_utf8string(jv.at(addr_key).as_string());
+  }
+
+  return out;
+}
+
+}  // anonymous namespace
+
+std::vector<EnrichmentResponse>
+Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
+  if (downloadUrl.empty()) {
+    throw Error(ErrorCategory::validation,
+                "downloadEnrichmentCollection: downloadUrl must not be empty");
+  }
+
+  std::vector<uint8_t> compressed_body;
+  try {
+    auto api_cfg = impl_->api_client->getConfiguration();
+    std::string full_url = downloadUrl;
+    if (downloadUrl.rfind("http://", 0) != 0 && downloadUrl.rfind("https://", 0) != 0) {
+      std::string base = to_std(api_cfg->getBaseUrl());
+      if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
+        full_url = base + full_url.substr(1);
+      } else if (!base.empty() && base.back() != '/' && !full_url.empty() && full_url.front() != '/') {
+        full_url = base + "/" + full_url;
+      } else {
+        full_url = base + full_url;
+      }
+    }
+
+    if (!web::uri::validate(to_sdk(full_url))) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: invalid URL format: failed URI validation");
+    }
+
+    // Protocol Downgrade & SSRF Protection:
+    // 1. If configured base_url is HTTPS, reject unencrypted HTTP download links to prevent token leakage
+    web::uri target_uri(to_sdk(full_url));
+    web::uri base_uri(api_cfg->getBaseUrl());
+
+    if (target_uri.host().empty() || target_uri.scheme().empty()) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: invalid URL format: missing host or scheme");
+    }
+
+    bool base_is_https   = (base_uri.scheme() == utility::conversions::to_string_t("https"));
+    bool target_is_https = (target_uri.scheme() == utility::conversions::to_string_t("https"));
+
+    if (base_is_https && !target_is_https) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: refusing insecure HTTP download link for HTTPS client");
+    }
+
+    // -------------------------------------------------------------------------
+    // Issue GET request with Bearer auth and Accept: application/gzip.
+    // -------------------------------------------------------------------------
+    web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
+    web::http::client::http_client http_client(target_uri, http_cfg);
+
+    web::http::http_request get_req(web::http::methods::GET);
+
+    // 2. Only attach Authorization header if target host and port match the configured base_url
+    auto get_effective_port = [](const web::uri& u) -> int {
+      int p = u.port();
+      if (p <= 0) {
+        if (u.scheme() == utility::conversions::to_string_t("https")) return 443;
+        if (u.scheme() == utility::conversions::to_string_t("http")) return 80;
+      }
+      return p;
+    };
+
+    auto iequals = [](const utility::string_t& a, const utility::string_t& b) noexcept {
+      if (a.size() != b.size()) return false;
+      return std::equal(a.begin(), a.end(), b.begin(), b.end(),
+                        [](auto ca, auto cb) {
+                          return std::tolower(static_cast<unsigned char>(ca)) ==
+                                 std::tolower(static_cast<unsigned char>(cb));
+                        });
+    };
+
+    bool is_same_host = iequals(target_uri.host(), base_uri.host());
+    bool is_same_port = (get_effective_port(target_uri) == get_effective_port(base_uri));
+
+    if (is_same_host && is_same_port) {
+      const auto& default_headers = api_cfg->getDefaultHeaders();
+      auto auth_it = default_headers.find(utility::conversions::to_string_t("Authorization"));
+      if (auth_it != default_headers.end()) {
+        get_req.headers()[utility::conversions::to_string_t("Authorization")] = auth_it->second;
+      }
+    }
+    get_req.headers()[utility::conversions::to_string_t("Accept")] =
+        utility::conversions::to_string_t("application/gzip");
+
+    web::http::http_response response;
+    try {
+      response = http_client.request(get_req).get();
+    } catch (const std::exception& e) {
+      throw Error(ErrorCategory::transport,
+                  std::string("downloadEnrichmentCollection: request failed: ") + e.what());
+    }
+
+    const auto status = response.status_code();
+    if (status != web::http::status_codes::OK) {
+      throw Error(ErrorCategory::http,
+                  "downloadEnrichmentCollection: HTTP error",
+                  static_cast<long>(status));
+    }
+
+    // -------------------------------------------------------------------------
+    // Read compressed body into a byte vector.
+    // -------------------------------------------------------------------------
+    try {
+      auto body_task = response.extract_vector();
+      compressed_body = body_task.get();
+    } catch (const std::exception& e) {
+      throw Error(ErrorCategory::transport,
+                  std::string("downloadEnrichmentCollection: failed to read body: ") + e.what());
+    }
+  } catch (const Error&) {
+    throw;
+  } catch (const web::uri_exception& e) {
+    throw Error(ErrorCategory::validation,
+                std::string("downloadEnrichmentCollection: invalid URL format: ") + e.what());
+  } catch (const std::invalid_argument& e) {
+    throw Error(ErrorCategory::validation,
+                std::string("downloadEnrichmentCollection: invalid argument: ") + e.what());
+  }
+
+  if (compressed_body.empty()) {
+    throw Error(ErrorCategory::parsing,
+                "downloadEnrichmentCollection: empty response body");
+  }
+
+  // -------------------------------------------------------------------------
+  // Decompress gzip, parse tar, decode each JSON entry.
+  // -------------------------------------------------------------------------
+  std::string tar_bytes;
+  try {
+    tar_bytes = gunzip(compressed_body);
+  } catch (const Error&) {
+    throw;  // already tagged with correct category
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::parsing,
+                std::string("downloadEnrichmentCollection: decompression error: ") + e.what());
+  }
+
+  std::vector<std::string_view> raw_entries;
+  try {
+    raw_entries = parse_tar_entries(tar_bytes);
+  } catch (const Error&) {
+    throw;
+  } catch (const std::exception& e) {
+    throw Error(ErrorCategory::parsing,
+                std::string("downloadEnrichmentCollection: tar parsing error: ") + e.what());
+  }
+
+  std::vector<EnrichmentResponse> results;
+  results.reserve(raw_entries.size());
+  for (const auto& entry : raw_entries) {
+    results.push_back(parse_enrichment_json(entry));
+  }
+
+  return results;
 }
 
 }  // namespace xyo
