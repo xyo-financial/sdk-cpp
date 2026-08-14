@@ -19,7 +19,6 @@ class XyoSdkCppConan(ConanFile):
     }
     default_options = {
         "shared": False,
-        "fPIC": True,
         # cpprestsdk configuration: disable websockets (only HTTP REST used)
         "cpprestsdk/*:with_websockets": False,
         # Only build the minimal set of Boost compiled libraries required by cpprestsdk:
@@ -55,6 +54,8 @@ class XyoSdkCppConan(ConanFile):
     def config_options(self):
         if self.settings.os == "Windows":
             self.options.rm_safe("fPIC")
+        else:
+            self.options.fPIC = True
 
     def configure(self):
         if self.options.shared or self.settings.os == "Windows":
