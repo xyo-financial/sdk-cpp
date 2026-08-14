@@ -60,8 +60,6 @@ class XyoSdkCppConan(ConanFile):
     def configure(self):
         if self.options.shared or self.settings.os == "Windows":
             self.options.rm_safe("fPIC")
-        if self.settings.os == "Windows":
-            self.options["boost"].header_only = True
 
     def validate(self):
         check_min_cppstd(self, "17")
