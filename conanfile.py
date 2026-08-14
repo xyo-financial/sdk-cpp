@@ -25,7 +25,6 @@ class XyoSdkCppConan(ConanFile):
         # Disable all others to avoid MSVC build bugs and slash build times by 80%.
         "boost/*:without_charconv": True,
         "boost/*:without_cobalt": True,
-        "boost/*:without_container": True,
         "boost/*:without_contract": True,
         "boost/*:without_coroutine": True,
         "boost/*:without_fiber": True,
