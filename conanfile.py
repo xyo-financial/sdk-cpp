@@ -20,8 +20,10 @@ class XyoSdkCppConan(ConanFile):
     default_options = {
         "shared": False,
         "fPIC": True,
+        # cpprestsdk configuration: disable websockets (only HTTP REST used)
+        "cpprestsdk/*:with_websockets": False,
         # Only build the minimal set of Boost compiled libraries required by cpprestsdk:
-        # system, date_time, thread, chrono, atomic, regex, filesystem, random, context.
+        # system, date_time, thread, chrono, atomic, regex, filesystem, random, context, container.
         # Disable all others to avoid MSVC build bugs and slash build times by 80%.
         "boost/*:without_charconv": True,
         "boost/*:without_cobalt": True,
@@ -63,9 +65,9 @@ class XyoSdkCppConan(ConanFile):
 
     def requirements(self):
         self.requires("cpprestsdk/2.10.18")
-        # cpprestsdk/2.10.18 in CCI pins boost/1.83.0. override=True resolves
-        # graph-wide to >=1.84.0 to use the modern, stable Boost releases.
-        self.requires("boost/[>=1.84.0 <1.90]", override=True)
+        # Boost 1.84.0 - 1.86.0: fixes MSVC 14.3 b2 build bugs (<1.84) while
+        # preserving Boost.Asio APIs required by cpprestsdk dependencies (<1.87).
+        self.requires("boost/[>=1.84.0 <1.87.0]", override=True)
         self.requires("zlib/[>=1.2.11 <2]")
         self.requires("openssl/[>=1.1.1 <4]")
 
