@@ -9,12 +9,13 @@ permissions:
   contents: write
   id-token: write # Required for GitHub OIDC signing and attestation
   attestations: write # Required to upload provenance attestations
+
 jobs:
   verify-tag:
     name: Verify Tag Integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -42,12 +43,29 @@ jobs:
             exit 1
           fi
 
-  publish-release:
-    name: Publish Release & Artifacts
+  run-tests:
+    name: Run Tests
     needs: verify-tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcpprest-dev libboost-all-dev libssl-dev zlib1g-dev build-essential
+      - name: Configure CMake
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DXYO_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Run Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  publish-release:
+    name: Publish Release & Artifacts
+    needs: run-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
       # 1. Archive creation
       - name: Build Archive
@@ -67,7 +85,7 @@ jobs:
 
       # 4. Generate GitHub Attestation (Provenance & Integrity signatures)
       - name: Generate Artifact Attestation
-        uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c # v1.4.3
+        uses: actions/attest-build-provenance@v1
         with:
           subject-path: 'xyo-sdk-cpp-${{ github.ref_name }}.tar.gz'
 
@@ -83,28 +101,15 @@ jobs:
           draft: false
           prerelease: false
 
-      # 6. Publish Conan Package to Remote (Commented out until a custom remote is configured or package is pushed to ConanCenter)
-      # • JFrog Artifactory (The company behind Conan, they offer a free tier for Open Source / C++ projects)
-      # • Cloudsmith or GitLab Packages (GitHub Packages unfortunately does not have native Conan support yet).
-      # - name: Publish to Conan Remote
-      #   run: |
-      #     pip install conan
-      #     conan profile detect --force
-      #     # Authenticate and upload to Syniol's public/private Conan repository
-      #     # conan remote add syniol-remote <REMOTE_URL>
-      #     # conan remote login syniol-remote ${{ secrets.CONAN_USER }} -p ${{ secrets.CONAN_PASSWORD }}
-      #     # conan create . --version=${{ github.ref_name }}
-      #     # conan upload xyo-sdk-cpp/${{ github.ref_name }} -r=syniol-remote --all
-
   verify-example:
     name: Verify Package in Example App
     needs: publish-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -113,9 +118,6 @@ jobs:
           pip install conan
           conan profile detect --force
 
-      # In a production scenario, Conan resolves the package from the remote we just published to.
-      # For pipeline completeness without active remote credentials, we export the package locally
-      # using the exact tagged version to simulate remote resolution.
       - name: Export Release Version to Conan Cache
         run: |
           TAG_VER=${{ github.ref_name }}
@@ -147,4 +149,3 @@ jobs:
       - name: Run Example Application
         run: |
           ./example/build/Release/xyo_example
-
