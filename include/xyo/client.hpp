@@ -74,10 +74,9 @@ struct XYO_SDK_API ClientConfig {
   long request_timeout_ms  = 30'000;
   std::size_t max_collection_size = 1'000;
 
-  ClientConfig() = default;
+  ClientConfig();
   explicit ClientConfig(std::string key,
-                        std::string url = "https://api.xyo.financial")
-      : api_key(std::move(key)), base_url(std::move(url)) {}
+                        std::string url = "");
 
   ClientConfig(const ClientConfig&) = delete;
   ClientConfig& operator=(const ClientConfig&) = delete;
