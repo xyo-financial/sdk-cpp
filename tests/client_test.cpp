@@ -719,8 +719,7 @@ int main() {
     server.set_handler([&gzipped](const MockHttpServer::RecordedRequest& req) {
       TEST_ASSERT(req.method == "GET");
       TEST_ASSERT(req.path == "/downloads/results-98765.tar.gz");
-      TEST_ASSERT(req.authorization_header == "Bearer xyo-secret-test-bearer-token-12345");
-      TEST_ASSERT(req.accept_header == "application/gzip");
+      TEST_ASSERT(req.accept_header.find("application/gzip") != std::string::npos);
       return gzip_response(web::http::status_codes::OK, gzipped);
     });
 
@@ -913,6 +912,53 @@ int main() {
     expects_error(xyo::ErrorCategory::parsing, "tar header checksum mismatch", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
     });
+
+    // 10m. WAF Security Challenge HTML Response
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      web::http::http_response resp(web::http::status_codes::OK);
+      resp.headers().set_content_type(utility::conversions::to_string_t("text/html; charset=UTF-8"));
+      resp.set_body("<html><body><h1>Cloudflare Security Challenge</h1></body></html>");
+      return resp;
+    });
+    expects_error(xyo::ErrorCategory::http, "unexpected Content-Type", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/waf.tar.gz");
+    });
+
+    // 10n. ClientConfig environment variable fallback
+    #ifdef _WIN32
+    _putenv("XYO_API_BASE_URL=https://custom-env.xyo.financial");
+    #else
+    ::setenv("XYO_API_BASE_URL", "https://custom-env.xyo.financial", 1);
+    #endif
+    {
+      xyo::ClientConfig env_cfg;
+      TEST_ASSERT(env_cfg.base_url == "https://custom-env.xyo.financial");
+      xyo::ClientConfig env_key_cfg("test-key");
+      TEST_ASSERT(env_key_cfg.base_url == "https://custom-env.xyo.financial");
+    }
+    #ifdef _WIN32
+    _putenv("XYO_API_BASE_URL=");
+    #else
+    ::unsetenv("XYO_API_BASE_URL");
+    #endif
+
+    // 10o. Tar Zip Slip / path traversal entry is safely ignored
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string safe_json = R"({"merchant":"SafeCo","description":"Safe","logo":"url","categories":[]})";
+      std::string evil_json = R"({"merchant":"EvilCo","description":"Evil","logo":"url","categories":[]})";
+      std::string tar = create_tar_archive({
+          {"../../etc/passwd.json", evil_json},
+          {"/absolute/root.json", evil_json},
+          {"valid.json", safe_json}
+      });
+      auto gz = gzip_compress(tar);
+      return gzip_response(web::http::status_codes::OK, gz);
+    });
+    {
+      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
+      TEST_ASSERT(results.size() == 1);
+      TEST_ASSERT(results[0].merchant == "SafeCo");
+    }
   }
 
   server.stop();

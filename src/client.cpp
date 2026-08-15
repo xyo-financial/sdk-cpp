@@ -92,6 +92,25 @@ void secure_erase(std::string& str) noexcept {
 // ClientConfig
 // ---------------------------------------------------------------------------
 
+ClientConfig::ClientConfig() {
+  const char* env_url = std::getenv("XYO_API_BASE_URL");
+  if (env_url && *env_url) {
+    base_url = env_url;
+  }
+}
+
+ClientConfig::ClientConfig(std::string key, std::string url)
+    : api_key(std::move(key)), base_url(std::move(url)) {
+  if (base_url.empty()) {
+    const char* env_url = std::getenv("XYO_API_BASE_URL");
+    if (env_url && *env_url) {
+      base_url = env_url;
+    } else {
+      base_url = "https://api.xyo.financial";
+    }
+  }
+}
+
 ClientConfig::ClientConfig(ClientConfig&& other) noexcept
     : api_key(std::move(other.api_key)),
       base_url(std::move(other.base_url)),
@@ -356,6 +375,8 @@ EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
 namespace {
 
 constexpr std::size_t MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100 MB safety limit
+constexpr std::size_t MAX_TAR_ENTRIES       = 50'000;
+constexpr std::size_t MAX_ENTRY_BYTES       = 10 * 1024 * 1024; // 10 MiB
 constexpr std::size_t TAR_BLOCK_SIZE        = 512;
 constexpr std::size_t TAR_SIZE_OFFSET       = 124;
 constexpr std::size_t TAR_SIZE_LEN          = 12;
@@ -461,7 +482,20 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
 
     offset += TAR_BLOCK_SIZE;  // advance past header block
 
-    if ((typeflag == '0' || typeflag == '\0') && file_size > 0) {
+    // Path traversal / Zip Slip mitigation
+    std::string entry_name(hdr, ::strnlen(hdr, 100));
+    bool is_traversal = (entry_name.find("..") != std::string::npos ||
+                         (!entry_name.empty() && (entry_name.front() == '/' || entry_name.front() == '\\')));
+
+    if ((typeflag == '0' || typeflag == '\0') && file_size > 0 && !is_traversal) {
+      if (file_size > MAX_ENTRY_BYTES) {
+        throw xyo::Error(xyo::ErrorCategory::parsing,
+                         "downloadEnrichmentCollection: tar entry size exceeds safety limit (10MB)");
+      }
+      if (entries.size() >= MAX_TAR_ENTRIES) {
+        throw xyo::Error(xyo::ErrorCategory::parsing,
+                         "downloadEnrichmentCollection: tar archive contains too many entries (exceeded limit)");
+      }
       // Check for integer overflow on file boundary
       if (file_size > total || offset > total - file_size) {
         throw xyo::Error(xyo::ErrorCategory::parsing,
@@ -582,7 +616,7 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
     }
 
     // -------------------------------------------------------------------------
-    // Issue GET request with Bearer auth and Accept: application/gzip.
+    // Issue GET request with Bearer auth and multi-MIME stream negotiation.
     // -------------------------------------------------------------------------
     web::http::client::http_client_config http_cfg = api_cfg->getHttpConfig();
     web::http::client::http_client http_client(target_uri, http_cfg);
@@ -619,7 +653,7 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       }
     }
     get_req.headers()[utility::conversions::to_string_t("Accept")] =
-        utility::conversions::to_string_t("application/gzip");
+        utility::conversions::to_string_t("application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8");
 
     web::http::http_response response;
     try {
@@ -634,6 +668,33 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
       throw Error(ErrorCategory::http,
                   "downloadEnrichmentCollection: HTTP error",
                   static_cast<long>(status));
+    }
+
+    // Validate Content-Type header to diagnose intermediate proxy/WAF challenge pages
+    const auto& resp_headers = response.headers();
+    auto ct_it = resp_headers.find(utility::conversions::to_string_t("Content-Type"));
+    if (ct_it != resp_headers.end()) {
+      std::string ct_str = to_std(ct_it->second);
+      std::string ct_lower = ct_str;
+      std::transform(ct_lower.begin(), ct_lower.end(), ct_lower.begin(),
+                     [](unsigned char c) { return std::tolower(c); });
+      if (ct_lower.find("gzip") == std::string::npos &&
+          ct_lower.find("tar") == std::string::npos &&
+          ct_lower.find("octet-stream") == std::string::npos &&
+          ct_lower.find("binary") == std::string::npos) {
+        std::string preview;
+        try {
+          preview = response.extract_utf8string(true).get();
+        } catch (...) {
+        }
+        if (preview.size() > 512) {
+          preview.resize(512);
+        }
+        throw Error(ErrorCategory::http,
+                    "downloadEnrichmentCollection: unexpected Content-Type '" + ct_str +
+                        "' received when expecting binary archive (body preview: " + preview + ")",
+                    static_cast<long>(status));
+      }
     }
 
     // -------------------------------------------------------------------------
