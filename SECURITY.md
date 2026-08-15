@@ -1,6 +1,6 @@
-# Security Policy
+# 🛡️ Security Policy
 
-## Supported Versions
+## 📋 Supported Versions
 
 Only the `2.0.0` release of the XYO C++ SDK receives active security updates and patches.
 
@@ -9,7 +9,7 @@ Only the `2.0.0` release of the XYO C++ SDK receives active security updates and
 | 2.0.0   | :white_check_mark: |
 | < 2.0.0 | :x: |
 
-## Reporting a Vulnerability
+## 🚨 Reporting a Vulnerability
 
 If you discover a potential security vulnerability in this SDK, please do not report it publicly through a GitHub issue. Instead, report it privately:
 

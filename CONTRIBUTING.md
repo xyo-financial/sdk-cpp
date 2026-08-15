@@ -6,7 +6,7 @@ To maintain strict performance, memory safety, ABI stability, and consistency ac
 
 ---
 
-## Table of Contents
+## 📑 Table of Contents
 
 1. [Two-Layer Architecture](#two-layer-architecture)
    - [Generated Layer (`openapi/`)](#1-generated-layer-openapi)
@@ -27,10 +27,11 @@ To maintain strict performance, memory safety, ABI stability, and consistency ac
 6. [Packaging Verification](#packaging-verification)
 7. [Submitting a Pull Request](#submitting-a-pull-request)
 8. [Release & Versioning Process](#release--versioning-process)
+9. [Security](#security)
 
 ---
 
-## Two-Layer Architecture
+## 🏗 Two-Layer Architecture
 
 The XYO C++ SDK is strictly organized into two distinct layers to separate machine-generated wire-protocol code from the developer-facing, idiomatic C++17 API.
 
@@ -76,7 +77,7 @@ The XYO C++ SDK is strictly organized into two distinct layers to separate machi
 
 ---
 
-## Contribution Workflow & Decision Matrix
+## 🔀 Contribution Workflow & Decision Matrix
 
 Before writing code, identify which repository is authoritative for your proposed change:
 
@@ -93,7 +94,7 @@ Before writing code, identify which repository is authoritative for your propose
 
 ---
 
-## Code Generation
+## ⚙️ Code Generation
 
 ### Automated Cross-Repository Synchronization
 When a new release tag or specification update is pushed to [`xyo-financial/specs`](https://github.com/xyo-financial/specs), an automated GitHub Actions workflow triggers a `repository_dispatch` event (`types: [spec_tagged, spec_updated]`) to this repository. The [`.github/workflows/generate.yml`](.github/workflows/generate.yml) workflow:
@@ -142,7 +143,7 @@ rm -rf openapi/test openapi/docs openapi/api specs
 
 ---
 
-## Prerequisites & Development Environment
+## 🛠 Prerequisites & Development Environment
 
 ### Required Toolchain
 - **C++ Compiler**: C++17 compliant compiler (GCC 9+, Clang 10+, Apple Clang 12+, MSVC 2019+)
@@ -182,7 +183,7 @@ sudo dnf install -y \
 
 ---
 
-## Build & Quality Gates
+## 🛡 Build & Quality Gates
 
 All pull requests must cleanly pass every quality gate before being considered for review.
 
@@ -265,7 +266,7 @@ ctest --test-dir build-asan --output-on-failure
 
 ---
 
-## Packaging Verification
+## 📦 Packaging Verification
 
 Ensure CMake packaging, target exports, and header installations work seamlessly for downstream consumers:
 
@@ -286,7 +287,7 @@ conan create . --build=missing
 
 ---
 
-## Submitting a Pull Request
+## 🚀 Submitting a Pull Request
 
 1. **Branch Naming**: Use descriptive branch names:
    - `feature/add-enrichment-retry-policy`
@@ -305,7 +306,7 @@ conan create . --build=missing
 
 ---
 
-## Release & Versioning Process
+## 📦 Release & Versioning Process
 
 The XYO C++ SDK follows strict [Semantic Versioning (SemVer 2.0.0)](https://semver.org/):
 
@@ -324,6 +325,6 @@ The XYO C++ SDK follows strict [Semantic Versioning (SemVer 2.0.0)](https://semv
 
 ---
 
-## Security
+## 🔒 Security
 
 If you discover a security vulnerability, please do NOT create a public issue. Follow the disclosure instructions outlined in [SECURITY.md](SECURITY.md) or email security@syniol.com directly.
