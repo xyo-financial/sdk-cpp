@@ -644,6 +644,18 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
 
     bool is_same_host = iequals(target_uri.host(), base_uri.host());
     bool is_same_port = (get_effective_port(target_uri) == get_effective_port(base_uri));
+    std::string target_host_str = to_std(target_uri.host());
+    std::string target_host_lower = target_host_str;
+    std::transform(target_host_lower.begin(), target_host_lower.end(), target_host_lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    bool is_s3 = (target_host_lower.size() >= 14 &&
+                  target_host_lower.rfind(".amazonaws.com") == (target_host_lower.size() - 14));
+
+    if (!(is_same_host && is_same_port) && !is_s3) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: domain \"" + target_host_str +
+                      "\" is not permitted for secure archive downloads");
+    }
 
     if (is_same_host && is_same_port) {
       const auto& default_headers = api_cfg->getDefaultHeaders();
@@ -682,17 +694,9 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
           ct_lower.find("tar") == std::string::npos &&
           ct_lower.find("octet-stream") == std::string::npos &&
           ct_lower.find("binary") == std::string::npos) {
-        std::string preview;
-        try {
-          preview = response.extract_utf8string(true).get();
-        } catch (...) {
-        }
-        if (preview.size() > 512) {
-          preview.resize(512);
-        }
         throw Error(ErrorCategory::http,
                     "downloadEnrichmentCollection: unexpected Content-Type '" + ct_str +
-                        "' received when expecting binary archive (body preview: " + preview + ")",
+                        "' received when expecting binary archive",
                     static_cast<long>(status));
       }
     }
