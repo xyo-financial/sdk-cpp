@@ -882,8 +882,9 @@ int main() {
 
     // 10j. Transport error for unreachable host
     int unreachable_port = get_free_port();
+    xyo::Client unreachable_client(xyo::ClientConfig("key", "http://127.0.0.1:" + std::to_string(unreachable_port)));
     try {
-      (void)client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
+      (void)unreachable_client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
@@ -924,7 +925,12 @@ int main() {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/waf.tar.gz");
     });
 
-    // 10n. ClientConfig environment variable fallback
+    // 10n. Untrusted rogue domain download is rejected
+    expects_error(xyo::ErrorCategory::validation, "is not permitted for secure archive downloads", [&] {
+      (void)client.downloadEnrichmentCollection("https://evil-untrusted-domain.com/downloads/job.tar.gz");
+    });
+
+    // 10o. ClientConfig environment variable fallback
     #ifdef _WIN32
     _putenv("XYO_API_BASE_URL=https://custom-env.xyo.financial");
     #else
