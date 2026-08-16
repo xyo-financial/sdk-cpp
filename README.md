@@ -1,18 +1,23 @@
-# XYO.Financial SDK for C++
+<p align="center">
+  <a href="https://xyo.financial" target="_blank" rel="noopener noreferrer">
+    <img alt="XYO Financial C++ Mascot" width="380" src="docs/mascot.png" />
+  </a>
+</p>
+
+<h1 align="center">XYO Financial SDK for C++</h1>
 
 <p align="center">
-    <a href="https://xyo.financial" target="_blank"><img alt="C++ Mascot for XYO.Financial" width="420" src="docs/mascot.png" /></a>
-    <br/>
-    <b>C++17 Financial Transaction Enrichment SDK</b>
+  <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Build Pipeline" /></a>
+  <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg" alt="Release Pipeline" /></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" />
+  <img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" />
+  <img src="https://img.shields.io/badge/Transport-cpprestsdk-informational" alt="Transport" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" /></a>
 </p>
 
 <p align="center">
-    <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Build Pipeline" /></a>
-    <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg" alt="Release Pipeline" /></a>
-    <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" />
-    <img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" />
-    <img src="https://img.shields.io/badge/Transport-cpprestsdk-informational" alt="Transport" />
-    <img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" />
+  <strong>The official C++ SDK for <a href="https://xyo.financial">XYO Financial</a>.</strong><br>
+  Seamlessly enrich raw financial transactions into clean merchant profiles, intelligent business categorizations, high-res logos, and geolocated address metadata using AI-powered enrichment pipelines.
 </p>
 
 ---
