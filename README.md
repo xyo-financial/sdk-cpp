@@ -3,7 +3,7 @@
 <p align="center">
     <a href="https://xyo.financial" target="_blank"><img alt="C++ Mascot for XYO.Financial" width="420" src="docs/mascot.png" /></a>
     <br/>
-    <b>Enterprise Financial Transaction Enrichment SDK for Modern C++17</b>
+    <b>C++17 Financial Transaction Enrichment SDK</b>
 </p>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 ---
 
-## 📖 Executive Summary
+## 📖 Summary
 
 The **XYO Financial SDK for C++** provides an institutional-grade, modern C++17 client library for integrating XYO's AI-driven transaction enrichment engine into high-performance financial systems, payment gateways, low-latency banking microservices, and core banking ledgers.
 
@@ -27,7 +27,7 @@ Maintained by [Syniol Limited](https://syniol.com) as the official C++ distribut
 
 ---
 
-## 🏗 Enterprise Architectural Principles
+## 🏗 Architectural Principles
 
 1. **Two-Layer PIMPL Architecture**:
    - **Wrapper Layer (`xyo/client.hpp`)**: Clean, idiomatic public API exposing strictly standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). 
@@ -425,7 +425,7 @@ ctest --test-dir build --output-on-failure
 
 ---
 
-## 📞 Enterprise Support
+## 📞 Support
 
 - **Developer Dashboard**: [https://xyo.financial/dashboard](https://xyo.financial/dashboard)
 - **Technical Support**: [support@syniol.com](mailto:support@syniol.com)
