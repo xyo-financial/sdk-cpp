@@ -125,14 +125,15 @@ struct HttpResponse {
   int status_code = 200;
   std::string content_type = "application/json";
   std::string body;
+  std::vector<std::pair<std::string, std::string>> headers;
 };
 
 inline HttpResponse json_response(int status, const std::string& json_str) {
-  return HttpResponse{status, "application/json", json_str};
+  return HttpResponse{status, "application/json", json_str, {}};
 }
 
 inline HttpResponse gzip_response(int status, const std::vector<uint8_t>& data) {
-  return HttpResponse{status, "application/gzip", std::string(reinterpret_cast<const char*>(data.data()), data.size())};
+  return HttpResponse{status, "application/gzip", std::string(reinterpret_cast<const char*>(data.data()), data.size()), {}};
 }
 
 class MockHttpServer {
@@ -143,6 +144,8 @@ class MockHttpServer {
     std::string authorization_header;
     std::string accept_header;
     std::string content_type;
+    std::string x_correlation_id;
+    std::string traceparent;
     std::string body;
   };
 
@@ -327,6 +330,8 @@ class MockHttpServer {
           if (lower_name == "authorization") rec.authorization_header = val;
           else if (lower_name == "accept") rec.accept_header = val;
           else if (lower_name == "content-type") rec.content_type = val;
+          else if (lower_name == "x-correlation-id") rec.x_correlation_id = val;
+          else if (lower_name == "traceparent") rec.traceparent = val;
         }
       }
 
@@ -346,11 +351,15 @@ class MockHttpServer {
       else if (resp.status_code == 401) status_msg = "Unauthorized";
       else if (resp.status_code == 404) status_msg = "Not Found";
       else if (resp.status_code == 422) status_msg = "Unprocessable Entity";
+      else if (resp.status_code == 429) status_msg = "Too Many Requests";
       else if (resp.status_code == 500) status_msg = "Internal Server Error";
 
       std::string raw_resp = "HTTP/1.1 " + std::to_string(resp.status_code) + " " + status_msg + "\r\n";
       raw_resp += "Content-Type: " + resp.content_type + "\r\n";
       raw_resp += "Content-Length: " + std::to_string(resp.body.size()) + "\r\n";
+      for (const auto& h : resp.headers) {
+        raw_resp += h.first + ": " + h.second + "\r\n";
+      }
       raw_resp += "Connection: close\r\n\r\n";
       raw_resp += resp.body;
 
@@ -474,12 +483,19 @@ int main() {
     TEST_ASSERT(err.http_status_code() == 404);
     TEST_ASSERT(err.transport_code() == 12);
     TEST_ASSERT(std::string(err.what()) == "test error message");
+    TEST_ASSERT(!err.rate_limit_info().has_value());
 
-    // to_string for EnrichmentStatus
+    // to_string for EnrichmentStatus and ErrorCategory
     TEST_ASSERT(xyo::to_string(xyo::EnrichmentStatus::ready) == "READY");
     TEST_ASSERT(xyo::to_string(xyo::EnrichmentStatus::failed) == "FAILED");
     TEST_ASSERT(xyo::to_string(xyo::EnrichmentStatus::pending) == "PENDING");
     TEST_ASSERT(xyo::to_string(static_cast<xyo::EnrichmentStatus>(99)) == "UNKNOWN");
+
+    TEST_ASSERT(xyo::to_string(xyo::ErrorCategory::validation) == "validation");
+    TEST_ASSERT(xyo::to_string(xyo::ErrorCategory::transport) == "transport");
+    TEST_ASSERT(xyo::to_string(xyo::ErrorCategory::http) == "http");
+    TEST_ASSERT(xyo::to_string(xyo::ErrorCategory::parsing) == "parsing");
+    TEST_ASSERT(xyo::to_string(xyo::ErrorCategory::rate_limit) == "rate_limit");
   }
 
   // ---------------------------------------------------------------------------
@@ -550,6 +566,87 @@ int main() {
     expects_error(xyo::ErrorCategory::validation, "exceeds configured max_collection_size", [&] {
       (void)client.enrichTransactions(oversized_batch);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2c. Batch array bounds validation (1 to 50,000 items)
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] Batch array bounds validation (1 to 50,000 items)\n";
+    // 0 items
+    expects_error(xyo::ErrorCategory::validation, "must not be empty", [&] {
+      (void)client.enrichTransactions({});
+    });
+
+    // > 50,000 items
+    std::vector<xyo::EnrichmentRequest> oversized_batch(50001, {"Tx", "US"});
+    expects_error(xyo::ErrorCategory::validation, "exceeds maximum limit of 50000 items", [&] {
+      (void)client.enrichTransactions(oversized_batch);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2d. Distributed Tracing Headers (x_correlation_id & traceparent)
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] Distributed Tracing Headers\n";
+    server.clear_requests();
+    server.set_handler([](const MockHttpServer::RecordedRequest& req) {
+      TEST_ASSERT(req.x_correlation_id == "corr-xyz-789");
+      TEST_ASSERT(req.traceparent == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+      return json_response(200,
+                           R"({
+                             "merchant": "Tracing Merchant",
+                             "description": "Tracing Description",
+                             "categories": ["Tech"],
+                             "logo": "data:image/png;base64,123"
+                           })");
+    });
+
+    xyo::EnrichmentRequestOptions opts;
+    opts.x_correlation_id = "corr-xyz-789";
+    opts.traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    xyo::EnrichmentResponse resp = client.enrichTransaction({"Transaction with trace", "US"}, opts);
+    TEST_ASSERT(resp.merchant == "Tracing Merchant");
+
+    auto requests = server.get_requests();
+    TEST_ASSERT(requests.size() == 1);
+    TEST_ASSERT(requests[0].x_correlation_id == "corr-xyz-789");
+    TEST_ASSERT(requests[0].traceparent == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+  }
+
+  // ---------------------------------------------------------------------------
+  // 2e. HTTP 429 Rate Limit error handling & header parsing
+  // ---------------------------------------------------------------------------
+  {
+    std::cout << "[Test] HTTP 429 Rate Limit error handling & header parsing\n";
+    server.clear_requests();
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      HttpResponse resp = json_response(429, R"({"error": "Too Many Requests", "message": "Rate limit exceeded"})");
+      resp.headers = {
+          {"Retry-After", "30"},
+          {"RateLimit-Limit", "100"},
+          {"RateLimit-Remaining", "0"},
+          {"RateLimit-Reset", "1672531199"}
+      };
+      return resp;
+    });
+
+    try {
+      (void)client.enrichTransaction({"RateLimit Test", "GB"});
+      TEST_ASSERT(false);
+    } catch (const xyo::XyoException& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
+      TEST_ASSERT(e.http_status_code() == 429);
+      TEST_ASSERT(e.rate_limit_info().has_value());
+      const auto& info = e.rate_limit_info().value();
+      TEST_ASSERT(info.retry_after.has_value() && info.retry_after.value() == 30);
+      TEST_ASSERT(info.limit.has_value() && info.limit.value() == 100);
+      TEST_ASSERT(info.remaining.has_value() && info.remaining.value() == 0);
+      TEST_ASSERT(info.reset.has_value() && info.reset.value() == 1672531199);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -692,7 +789,7 @@ int main() {
     std::cout << "[Test] enrichTransactions bulk operation\n";
     // Empty vector validation check
     expects_error(xyo::ErrorCategory::validation,
-                  "enrichTransactions: request list must not be empty", [&] {
+                  "must not be empty", [&] {
                     (void)client.enrichTransactions({});
                   });
 
@@ -728,7 +825,7 @@ int main() {
     xyo::Client limited_client(std::move(limited_cfg));
     expects_error(xyo::ErrorCategory::validation,
                   "exceeds configured max_collection_size", [&] {
-                    limited_client.enrichTransactions(bulk_reqs);
+                    (void)limited_client.enrichTransactions(bulk_reqs);
                   });
 
     // HTTP 422 Bulk Error mapping
@@ -956,7 +1053,7 @@ int main() {
 
     // 10e. Empty body parsing error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return HttpResponse{200, "application/gzip", ""};
+      return HttpResponse{200, "application/gzip", "", {}};
     });
     expects_error(xyo::ErrorCategory::parsing, "empty response body", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/empty.tar.gz");
@@ -1050,7 +1147,7 @@ int main() {
 
     // 10m. WAF Security Challenge HTML Response
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return HttpResponse{200, "text/html; charset=UTF-8", "<html><body><h1>Cloudflare Security Challenge</h1></body></html>"};
+      return HttpResponse{200, "text/html; charset=UTF-8", "<html><body><h1>Cloudflare Security Challenge</h1></body></html>", {}};
     });
     expects_error(xyo::ErrorCategory::http, "unexpected Content-Type", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/waf.tar.gz");

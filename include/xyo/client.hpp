@@ -34,8 +34,13 @@
 namespace xyo {
 
 // ---------------------------------------------------------------------------
-// Domain types – purposely simple, independent of cpprestsdk internals.
+// Options & Domain types – purposely simple, independent of internals.
 // ---------------------------------------------------------------------------
+
+struct XYO_SDK_API EnrichmentRequestOptions {
+  std::optional<std::string> x_correlation_id;
+  std::optional<std::string> traceparent;
+};
 
 struct XYO_SDK_API EnrichmentRequest {
   std::string content;      ///< Payment description, max 128 chars.
@@ -86,31 +91,44 @@ struct XYO_SDK_API ClientConfig {
 };
 
 // ---------------------------------------------------------------------------
-// SDK error type
+// SDK error type & Rate Limit Info
 // ---------------------------------------------------------------------------
 
-enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing };
+struct XYO_SDK_API RateLimitInfo {
+  std::optional<long> limit;
+  std::optional<long> remaining;
+  std::optional<long> reset;       ///< Epoch timestamp or seconds until reset
+  std::optional<long> retry_after; ///< Seconds until retry allowed
+};
+
+enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing, rate_limit };
+
+[[nodiscard]] XYO_SDK_API std::string to_string(ErrorCategory category);
 
 class XYO_SDK_API Error : public std::runtime_error {
  public:
   Error(ErrorCategory category, const std::string& message,
-        long http_status_code = 0, int transport_code = 0);
+        long http_status_code = 0, int transport_code = 0,
+        std::optional<RateLimitInfo> rate_limit_info = std::nullopt);
 
   ErrorCategory category()         const noexcept { return category_; }
   long          http_status_code() const noexcept { return http_status_code_; }
   int           transport_code()   const noexcept { return transport_code_; }
+  const std::optional<RateLimitInfo>& rate_limit_info() const noexcept { return rate_limit_info_; }
 
  private:
   ErrorCategory category_         = ErrorCategory::validation;
   long          http_status_code_ = 0;
   int           transport_code_   = 0;
+  std::optional<RateLimitInfo> rate_limit_info_;
 };
+
+using XyoException = Error;
 
 // ---------------------------------------------------------------------------
 // Client – primary entry point.
 //
-// Thread-safety: safe to call concurrently; the underlying cpprestsdk
-// ApiClient is itself thread-safe.
+// Thread-safety: safe to call concurrently.
 // ---------------------------------------------------------------------------
 
 class XYO_SDK_API Client {
@@ -124,26 +142,24 @@ class XYO_SDK_API Client {
   ~Client() noexcept;
 
   /// Enrich a single financial transaction (synchronous).
-  [[nodiscard]] EnrichmentResponse enrichTransaction(const EnrichmentRequest& request) const;
+  [[nodiscard]] EnrichmentResponse enrichTransaction(
+      const EnrichmentRequest& request,
+      const EnrichmentRequestOptions& options = {}) const;
 
   /// Enrich a batch of transactions asynchronously; returns a job handle.
   [[nodiscard]] BulkEnrichmentResponse enrichTransactions(
-      const std::vector<EnrichmentRequest>& requests) const;
+      const std::vector<EnrichmentRequest>& requests,
+      const EnrichmentRequestOptions& options = {}) const;
 
   /// Poll the status of an async bulk enrichment job.
-  [[nodiscard]] EnrichmentStatus getEnrichmentStatus(const std::string& id) const;
+  [[nodiscard]] EnrichmentStatus getEnrichmentStatus(
+      const std::string& id,
+      const EnrichmentRequestOptions& options = {}) const;
 
   /// Download and decode a completed enrichment collection archive.
-  ///
-  /// @param downloadUrl  The `link` field returned by enrichTransactions().
-  ///                     The server responds with an application/gzip
-  ///                     (tar.gz) body; each tar entry contains one
-  ///                     JSON-encoded EnrichmentResponse.
-  /// @returns            A vector of all EnrichmentResponse records found
-  ///                     inside the archive.
-  /// @throws xyo::Error  On HTTP errors, I/O failures, or parse failures.
-  [[nodiscard]] std::vector<EnrichmentResponse>
-  downloadEnrichmentCollection(const std::string& downloadUrl) const;
+  [[nodiscard]] std::vector<EnrichmentResponse> downloadEnrichmentCollection(
+      const std::string& downloadUrl,
+      const EnrichmentRequestOptions& options = {}) const;
 
  private:
   struct Impl;
