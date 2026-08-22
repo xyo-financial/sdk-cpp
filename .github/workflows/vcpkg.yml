@@ -25,8 +25,6 @@ jobs:
           # macOS
           - os: macos-latest
             triplet: arm64-osx
-          - os: macos-13
-            triplet: x64-osx
           # Windows
           - os: windows-2022
             triplet: x64-windows
@@ -92,13 +90,13 @@ jobs:
         if: "!contains(matrix.triplet, 'android')"
         shell: bash
         run: |
-          cmake -S tests/vcpkg_sample -B build-sample \
+          cmake -S tests/vcpkg_sample -B build-sample -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           cmake --build build-sample --config Release
 
       - name: Run Consumer Executable (Host platforms)
-        if: matrix.triplet == 'x64-linux' || matrix.triplet == 'arm64-osx' || matrix.triplet == 'x64-osx' || matrix.triplet == 'x64-windows'
+        if: matrix.triplet == 'x64-linux' || matrix.triplet == 'arm64-osx' || matrix.triplet == 'x64-windows' || matrix.triplet == 'x64-windows-static' || matrix.triplet == 'x64-windows-static-md' || matrix.triplet == 'x86-windows'
         shell: bash
         run: |
           if [ -f "./build-sample/vcpkg_sample" ]; then
