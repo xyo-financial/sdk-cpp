@@ -3,6 +3,7 @@ project(XYOSDK VERSION 2.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+include(FetchContent)
 
 if(MSVC)
   add_compile_definitions(
@@ -12,43 +13,39 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
-# Dependencies – cpprestsdk (casablanca) provides HTTP + JSON + pplx.
-# libcurl is no longer used directly by the wrapper; cpprestsdk bundles its
-# own transport layer. Boost is required by cpprestsdk (boost::optional etc.).
+# Dependencies – cpr (C++ Requests / libcurl), nlohmann_json, ZLIB, OpenSSL
 # ---------------------------------------------------------------------------
-find_package(cpprestsdk REQUIRED)
-find_package(Boost REQUIRED)
+set(CPR_FORCE_USE_SYSTEM_CURL ON CACHE BOOL "" FORCE)
+set(CPR_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(CPR_USE_SYSTEM_GTEST OFF CACHE BOOL "" FORCE)
+
+find_package(cpr CONFIG QUIET)
+if(NOT cpr_FOUND)
+  FetchContent_Declare(
+    cpr
+    GIT_REPOSITORY https://github.com/libcpr/cpr.git
+    GIT_TAG        1.10.5
+  )
+  FetchContent_MakeAvailable(cpr)
+endif()
+
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT nlohmann_json_FOUND)
+  FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+  )
+  FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
 find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # ---------------------------------------------------------------------------
-# OpenAPI-generated sources (output of: npx @openapitools/openapi-generator-cli
-#   generate -i specs/openapi.yml -g cpp-restsdk -o cpp/openapi)
-# ---------------------------------------------------------------------------
-set(GENERATED_SOURCES
-  openapi/src/ModelBase.cpp
-  openapi/src/Object.cpp
-  openapi/src/AnyType.cpp
-  openapi/src/HttpContent.cpp
-  openapi/src/JsonBody.cpp
-  openapi/src/MultipartFormData.cpp
-  openapi/src/ApiClient.cpp
-  openapi/src/ApiConfiguration.cpp
-  openapi/src/ApiException.cpp
-  openapi/src/api/EnrichmentApi.cpp
-  openapi/src/model/APIError.cpp
-  openapi/src/model/EnrichTransactionCollectionResponse.cpp
-  openapi/src/model/EnrichTransactions_request_inner.cpp
-  openapi/src/model/EnrichmentCollectionStatusResponse.cpp
-  openapi/src/model/EnrichmentRequest.cpp
-  openapi/src/model/EnrichmentResponse.cpp
-  openapi/src/model/ErrorResponse.cpp
-)
-
-# ---------------------------------------------------------------------------
 # SDK library
 # ---------------------------------------------------------------------------
-add_library(xyo_sdk src/client.cpp ${GENERATED_SOURCES})
+add_library(xyo_sdk src/client.cpp)
 add_library(XYO::SDK ALIAS xyo_sdk)
 
 target_compile_features(xyo_sdk PUBLIC cxx_std_17)
@@ -56,17 +53,14 @@ target_compile_features(xyo_sdk PUBLIC cxx_std_17)
 target_include_directories(xyo_sdk
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/openapi/include>
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/openapi/include/XYOSDK>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(xyo_sdk
-  PUBLIC
-    cpprestsdk::cpprest
-    Boost::boost
+  PRIVATE
+    cpr::cpr
+    nlohmann_json::nlohmann_json
     ZLIB::ZLIB
-    OpenSSL::SSL
     OpenSSL::Crypto
 )
 
@@ -83,7 +77,7 @@ option(XYO_BUILD_TESTS "Build the XYO SDK tests" ON)
 if(XYO_BUILD_TESTS)
   enable_testing()
   add_executable(xyo_sdk_tests tests/client_test.cpp)
-  target_link_libraries(xyo_sdk_tests PRIVATE XYO::SDK)
+  target_link_libraries(xyo_sdk_tests PRIVATE XYO::SDK nlohmann_json::nlohmann_json ZLIB::ZLIB)
   if(WIN32)
     target_link_libraries(xyo_sdk_tests PRIVATE ws2_32)
   endif()

@@ -41,12 +41,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcpprest-dev libboost-all-dev libssl-dev zlib1g-dev build-essential
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev zlib1g-dev build-essential
 
       - name: Install System Dependencies (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          brew install cpprestsdk boost
+          brew install openssl zlib
 
       - name: Setup MSVC Developer Command Prompt (Windows)
         if: matrix.os == 'windows-2022'

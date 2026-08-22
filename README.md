@@ -11,7 +11,7 @@
   <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg" alt="Release Pipeline" /></a>
   <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" />
   <img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" />
-  <img src="https://img.shields.io/badge/Transport-cpprestsdk-informational" alt="Transport" />
+  <img src="https://img.shields.io/badge/Transport-CPR%20%2F%20libcurl-informational" alt="Transport" />
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" /></a>
 </p>
 
@@ -34,10 +34,9 @@ Maintained by [Syniol Limited](https://syniol.com) as the official C++ distribut
 
 ## 🏗 Architectural Principles
 
-1. **Two-Layer PIMPL Architecture**:
-   - **Wrapper Layer (`xyo/client.hpp`)**: Clean, idiomatic public API exposing strictly standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). 
-   - **Generated Layer (`openapi/`)**: Low-level wire client generated from upstream OpenAPI specifications in [`xyo-financial/specs`](https://github.com/xyo-financial/specs).
-   - **Zero Leaky Abstractions**: Third-party headers (`<cpprest/*>`, `<boost/*>`, `<zlib.h>`) are completely encapsulated in `src/client.cpp`. Consuming applications never pull third-party headers into their translation units.
+1. **Modern PIMPL Architecture**:
+   - **Public Header (`xyo/client.hpp`)**: Clean, idiomatic public API exposing strictly standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). 
+   - **Zero Leaky Abstractions**: Third-party headers (`<cpr/*>`, `<nlohmann/*>`, `<zlib.h>`) are completely encapsulated in `src/client.cpp`. Consuming applications never pull third-party headers into their translation units.
 2. **Thread-Safe & Re-Entrant**: `xyo::Client` instances are thread-safe and can be safely shared across concurrent worker pools, async task executors, and multithreaded backend pipelines.
 3. **Memory Safety & Move Semantics**: Fully RAII-compliant with move-only configuration objects and zero manual pointer management, eliminating memory leaks and phantom key allocations.
 4. **In-Memory Archive Streaming**: Direct in-memory `.tar.gz` decompression (via `zlib`) and custom zero-copy POSIX ustar/GNU tar archive parsing for instantaneous bulk result ingestion without disk I/O.
@@ -54,8 +53,8 @@ Maintained by [Syniol Limited](https://syniol.com) as the official C++ distribut
   - Microsoft Visual Studio (MSVC) 2019+ / 2022+ (Windows)
 - **Build System**: CMake 3.16 or newer.
 - **Dependencies**:
-  - `cpprestsdk` (2.10+)
-  - `Boost` (1.70+)
+  - `cpr` (1.10+)
+  - `nlohmann_json` (3.11+)
   - `OpenSSL` (1.1+ or 3.0+)
   - `ZLIB` (1.2.8+)
 - **Network**: Outbound HTTPS connectivity to `api.xyo.financial` over port `443` (TLS 1.2+ mandatory).
@@ -67,11 +66,11 @@ Maintained by [Syniol Limited](https://syniol.com) as the official C++ distribut
 
 ### Option 1: Conan 2 (Recommended)
 
-Add `xyo-sdk-cpp` to your `conanfile.txt`:
+Add `xyo-sdk` to your `conanfile.txt`:
 
 ```ini
 [requires]
-xyo-sdk-cpp/2.0.0
+xyo-sdk/2.0.0
 
 [generators]
 CMakeDeps
@@ -96,7 +95,7 @@ cmake --build --preset conan-release
 Install the package via vcpkg:
 
 ```sh
-vcpkg install xyo-sdk-cpp
+vcpkg install xyo-sdk
 ```
 
 Configure your CMake project with the vcpkg toolchain:
