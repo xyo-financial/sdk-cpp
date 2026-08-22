@@ -68,6 +68,7 @@ set_target_properties(xyo_sdk PROPERTIES
   VERSION     ${PROJECT_VERSION}
   SOVERSION   ${PROJECT_VERSION_MAJOR}
   EXPORT_NAME SDK
+  WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
 
 # ---------------------------------------------------------------------------
