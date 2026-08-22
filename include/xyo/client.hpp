@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -95,10 +96,10 @@ struct XYO_SDK_API ClientConfig {
 // ---------------------------------------------------------------------------
 
 struct XYO_SDK_API RateLimitInfo {
-  std::optional<long> limit;
-  std::optional<long> remaining;
-  std::optional<long> reset;       ///< Epoch timestamp or seconds until reset
-  std::optional<long> retry_after; ///< Seconds until retry allowed
+  std::optional<int64_t> limit;
+  std::optional<int64_t> remaining;
+  std::optional<int64_t> reset;       ///< Epoch timestamp or seconds until reset
+  std::optional<int64_t> retry_after; ///< Seconds until retry allowed
 };
 
 enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing, rate_limit };

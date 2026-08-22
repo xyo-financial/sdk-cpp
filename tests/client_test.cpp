@@ -615,6 +615,19 @@ int main() {
     TEST_ASSERT(requests.size() == 1);
     TEST_ASSERT(requests[0].x_correlation_id == "corr-xyz-789");
     TEST_ASSERT(requests[0].traceparent == "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+    // Header injection validation tests
+    xyo::EnrichmentRequestOptions bad_corr;
+    bad_corr.x_correlation_id = "header\r\ninjection";
+    expects_error(xyo::ErrorCategory::validation, "x_correlation_id contains invalid header characters", [&] {
+      (void)client.enrichTransaction({"Tx", "US"}, bad_corr);
+    });
+
+    xyo::EnrichmentRequestOptions bad_trace;
+    bad_trace.traceparent = "traceparent\nval";
+    expects_error(xyo::ErrorCategory::validation, "traceparent contains invalid header characters", [&] {
+      (void)client.enrichTransaction({"Tx", "US"}, bad_trace);
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -629,7 +642,7 @@ int main() {
           {"Retry-After", "30"},
           {"RateLimit-Limit", "100"},
           {"RateLimit-Remaining", "0"},
-          {"RateLimit-Reset", "1672531199"}
+          {"RateLimit-Reset", "2524608000"} // Y2K38 epoch test (>2^31-1)
       };
       return resp;
     });
@@ -645,7 +658,7 @@ int main() {
       TEST_ASSERT(info.retry_after.has_value() && info.retry_after.value() == 30);
       TEST_ASSERT(info.limit.has_value() && info.limit.value() == 100);
       TEST_ASSERT(info.remaining.has_value() && info.remaining.value() == 0);
-      TEST_ASSERT(info.reset.has_value() && info.reset.value() == 1672531199);
+      TEST_ASSERT(info.reset.has_value() && info.reset.value() == 2524608000LL);
     }
   }
 

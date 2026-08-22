@@ -40,6 +40,15 @@ void secure_erase(std::string& str) noexcept {
   }
 }
 
+inline bool is_valid_header_value(const std::string& val) {
+  for (unsigned char c : val) {
+    if (c < 32 || c > 126) {
+      return false;
+    }
+  }
+  return true;
+}
+
 inline void validate_request(const EnrichmentRequest& req, const char* op_name) {
   if (req.content.empty()) {
     throw Error(ErrorCategory::validation,
@@ -59,17 +68,33 @@ inline void validate_request(const EnrichmentRequest& req, const char* op_name) 
   }
 }
 
+inline void validate_batch_size(std::size_t size, std::size_t max_collection_size) {
+  if (size == 0) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: request list must not be empty (must contain between 1 and 50000 items)");
+  }
+  if (size > 50'000) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(size) +
+                " exceeds maximum limit of 50000 items");
+  }
+  if (size > max_collection_size) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(size) +
+                " exceeds configured max_collection_size of " +
+                std::to_string(max_collection_size));
+  }
+}
+
 inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& headers) {
   RateLimitInfo info;
   bool found = false;
 
   auto find_val = [&](const std::initializer_list<const char*>& keys) -> std::optional<std::string> {
-    for (const auto& [k, v] : headers) {
-      std::string lower_k = k;
-      std::transform(lower_k.begin(), lower_k.end(), lower_k.begin(),
-                     [](unsigned char c) { return std::tolower(c); });
-      for (const char* key : keys) {
-        if (lower_k == key) return v;
+    for (const char* key : keys) {
+      auto it = headers.find(key);
+      if (it != headers.end()) {
+        return it->second;
       }
     }
     return std::nullopt;
@@ -77,27 +102,35 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
 
   if (auto val = find_val({"retry-after"})) {
     try {
-      info.retry_after = std::stol(*val);
+      info.retry_after = std::stoll(*val);
       found = true;
-    } catch (...) {}
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
   }
   if (auto val = find_val({"ratelimit-limit", "x-ratelimit-limit"})) {
     try {
-      info.limit = std::stol(*val);
+      info.limit = std::stoll(*val);
       found = true;
-    } catch (...) {}
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
   }
   if (auto val = find_val({"ratelimit-remaining", "x-ratelimit-remaining"})) {
     try {
-      info.remaining = std::stol(*val);
+      info.remaining = std::stoll(*val);
       found = true;
-    } catch (...) {}
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
   }
   if (auto val = find_val({"ratelimit-reset", "x-ratelimit-reset"})) {
     try {
-      info.reset = std::stol(*val);
+      info.reset = std::stoll(*val);
       found = true;
-    } catch (...) {}
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
   }
 
   if (found) return info;
@@ -119,9 +152,15 @@ inline cpr::Header build_headers(const std::string& api_key,
     headers.insert({"Accept", accept});
   }
   if (options.x_correlation_id.has_value() && !options.x_correlation_id->empty()) {
+    if (!is_valid_header_value(options.x_correlation_id.value())) {
+      throw Error(ErrorCategory::validation, "x_correlation_id contains invalid header characters");
+    }
     headers.insert({"x-correlation-id", options.x_correlation_id.value()});
   }
   if (options.traceparent.has_value() && !options.traceparent->empty()) {
+    if (!is_valid_header_value(options.traceparent.value())) {
+      throw Error(ErrorCategory::validation, "traceparent contains invalid header characters");
+    }
     headers.insert({"traceparent", options.traceparent.value()});
   }
   return headers;
@@ -383,21 +422,7 @@ BulkEnrichmentResponse Client::enrichTransactions(
     const std::vector<EnrichmentRequest>& requests,
     const EnrichmentRequestOptions& options) const {
 
-  if (requests.empty()) {
-    throw Error(ErrorCategory::validation,
-                "enrichTransactions: request list must not be empty (must contain between 1 and 50000 items)");
-  }
-  if (requests.size() > 50'000) {
-    throw Error(ErrorCategory::validation,
-                "enrichTransactions: batch size " + std::to_string(requests.size()) +
-                " exceeds maximum limit of 50000 items");
-  }
-  if (requests.size() > impl_->config.max_collection_size) {
-    throw Error(ErrorCategory::validation,
-                "enrichTransactions: batch size " + std::to_string(requests.size()) +
-                " exceeds configured max_collection_size of " +
-                std::to_string(impl_->config.max_collection_size));
-  }
+  validate_batch_size(requests.size(), impl_->config.max_collection_size);
 
   nlohmann::json body_array = nlohmann::json::array();
   for (const auto& r : requests) {
