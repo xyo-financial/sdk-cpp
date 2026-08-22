@@ -2,7 +2,7 @@
 # XYO RESTful Transaction Enrichment API
 # RESTful API for enriching financial transactions.
 #
-# The version of the OpenAPI document: 1.0.0
+# The version of the OpenAPI document: 2.1.0
 #
 # https://openapi-generator.tech
 #
@@ -10,7 +10,7 @@
 
 cmake_minimum_required (VERSION 3.10)
 
-project(XYOSDK CXX)
+project(XYOSDK VERSION 2.1.0 CXX)
 
 # Force -fPIC even if the project is configured for building a static library.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
