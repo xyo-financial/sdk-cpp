@@ -187,7 +187,7 @@ utility::string_t ModelBase::toString( const std::vector<T> & val )
     {
         strArray.append( toString(item) + "," );
     }
-    if (val.count() > 0)
+    if (val.size() > 0)
     {
         strArray.pop_back();
     }
@@ -203,7 +203,7 @@ utility::string_t ModelBase::toString( const std::set<T> & val )
     {
         strArray.append( toString(item) + "," );
     }
-    if (val.count() > 0)
+    if (val.size() > 0)
     {
         strArray.pop_back();
     }
@@ -319,24 +319,8 @@ bool ModelBase::fromString(const utility::string_t& val, std::set<T>& outVal )
 template<typename T>
 bool ModelBase::fromString(const utility::string_t& val, std::map<utility::string_t, T>& outVal )
 {
-    bool ok = false;
     web::json::value jsonValue = web::json::value::parse(val);
-    if (jsonValue.is_array())
-    {
-        for (const web::json::value& jitem : jsonValue.as_array())
-        {
-            T item;
-            ok &= fromJson(jitem, item);
-            outVal.insert({ val, item });
-        }
-    }
-    else
-    {
-        T item;
-        ok = fromJson(jsonValue, item);
-        outVal.insert({ val, item });
-    }
-    return ok;
+    return fromJson(jsonValue, outVal);
 }
 template<typename T>
 bool ModelBase::fromJson( const web::json::value& val, std::shared_ptr<T> &outVal )

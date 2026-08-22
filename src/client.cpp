@@ -42,7 +42,7 @@ void secure_erase(std::string& str) noexcept {
 
 inline bool is_valid_header_value(const std::string& val) {
   for (unsigned char c : val) {
-    if (c < 32 || c > 126) {
+    if (c != 0x09 && (c < 32 || c > 126)) {
       return false;
     }
   }
@@ -105,6 +105,9 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
       info.retry_after = std::stoll(*val);
       found = true;
     } catch (const std::invalid_argument&) {
+      // Retry-After may be an HTTP-date string (RFC 7231 §7.1.3) rather than a
+      // delta-seconds integer. Date-string parsing is not implemented; the field
+      // is left unset so callers should treat a missing retry_after as unknown.
     } catch (const std::out_of_range&) {
     }
   }
@@ -163,6 +166,12 @@ inline cpr::Header build_headers(const std::string& api_key,
     }
     headers.insert({"traceparent", options.traceparent.value()});
   }
+  if (options.x_api_user.has_value() && !options.x_api_user->empty()) {
+    if (!is_valid_header_value(options.x_api_user.value())) {
+      throw Error(ErrorCategory::validation, "x_api_user contains invalid header characters");
+    }
+    headers.insert({"x-api-user", options.x_api_user.value()});
+  }
   return headers;
 }
 
@@ -178,6 +187,12 @@ inline void check_and_throw_http_error(const cpr::Response& res, const char* op_
     throw Error(ErrorCategory::http,
                 "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + ": " + res.text,
                 res.status_code, 0, rli);
+  }
+  if (res.status_code != 0 && res.status_code != 200) {
+    throw Error(ErrorCategory::http,
+                "Unexpected HTTP status from " + std::string(op_name) + ": HTTP " +
+                    std::to_string(res.status_code) + " (expected 200)",
+                res.status_code);
   }
 }
 
@@ -246,8 +261,8 @@ std::string to_string(EnrichmentStatus status) {
     case EnrichmentStatus::ready:   return "READY";
     case EnrichmentStatus::failed:  return "FAILED";
     case EnrichmentStatus::pending: return "PENDING";
+    default:                        return "UNKNOWN";
   }
-  return "UNKNOWN";
 }
 
 std::string to_string(ErrorCategory category) {
@@ -257,8 +272,8 @@ std::string to_string(ErrorCategory category) {
     case ErrorCategory::http:       return "http";
     case ErrorCategory::parsing:    return "parsing";
     case ErrorCategory::rate_limit: return "rate_limit";
+    default:                        return "unknown";
   }
-  return "unknown";
 }
 
 // ---------------------------------------------------------------------------

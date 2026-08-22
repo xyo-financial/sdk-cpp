@@ -41,6 +41,7 @@ namespace xyo {
 struct XYO_SDK_API EnrichmentRequestOptions {
   std::optional<std::string> x_correlation_id;
   std::optional<std::string> traceparent;
+  std::optional<std::string> x_api_user;
 };
 
 struct XYO_SDK_API EnrichmentRequest {
