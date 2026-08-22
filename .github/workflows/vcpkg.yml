@@ -1,0 +1,90 @@
+name: vcpkg Packaging & Multi-Platform Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vcpkg-matrix:
+    name: vcpkg (${{ matrix.triplet }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            triplet: x64-linux
+          # macOS
+          - os: macos-latest
+            triplet: arm64-osx
+          - os: macos-13
+            triplet: x64-osx
+          # Windows
+          - os: windows-2022
+            triplet: x64-windows
+          - os: windows-2022
+            triplet: x64-windows-static
+          - os: windows-2022
+            triplet: x64-windows-static-md
+          - os: windows-2022
+            triplet: x86-windows
+          # Android Cross-Compilation
+          - os: ubuntu-latest
+            triplet: arm64-android
+          - os: ubuntu-latest
+            triplet: x64-android
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+
+      - name: Setup Ninja
+        uses: ashutosh-varma/setup-ninja@master
+        with:
+          version: 1.11.1
+
+      - name: Setup Android NDK (for Android triplets)
+        if: contains(matrix.triplet, 'android')
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          link-to-sdk: true
+
+      - name: Set Android Environment Variables
+        if: contains(matrix.triplet, 'android')
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'b62515d3151be67fc19cf0e87b649d2122b51296'
+          vcpkgDirectory: ${{ github.workspace }}/vcpkg
+
+      - name: Install xyo-sdk via vcpkg Overlay Port
+        run: |
+          ${{ github.workspace }}/vcpkg/vcpkg install xyo-sdk \
+            --overlay-ports=${{ github.workspace }}/packaging/vcpkg \
+            --triplet ${{ matrix.triplet }}
+
+      - name: Build Consumer Sample (Non-Android)
+        if: "!contains(matrix.triplet, 'android')"
+        run: |
+          cmake -S tests/vcpkg_sample -B build-sample \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          cmake --build build-sample --config Release
+
+      - name: Run Consumer Executable (Host platforms)
+        if: matrix.triplet == 'x64-linux' || matrix.triplet == 'arm64-osx' || matrix.triplet == 'x64-osx' || matrix.triplet == 'x64-windows'
+        run: |
+          cd build-sample
+          ctest --output-on-failure -C Release || ./vcpkg_sample || ./Release/vcpkg_sample.exe
