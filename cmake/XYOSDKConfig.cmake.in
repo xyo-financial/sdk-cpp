@@ -1,8 +1,8 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
-find_dependency(cpprestsdk)
-find_dependency(Boost)
+find_dependency(cpr)
+find_dependency(nlohmann_json)
 find_dependency(ZLIB)
 find_dependency(OpenSSL)
 include("${CMAKE_CURRENT_LIST_DIR}/XYOSDKTargets.cmake")

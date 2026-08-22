@@ -3,8 +3,7 @@
 
 #include "xyo/client.hpp"
 
-#include <cpprest/http_listener.h>
-#include <cpprest/json.h>
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
   #ifndef WIN32_LEAN_AND_MEAN
@@ -24,6 +23,8 @@
 
 #include <zlib.h>
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -31,6 +32,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -119,6 +121,20 @@ int get_free_port() {
 #endif
 }
 
+struct HttpResponse {
+  int status_code = 200;
+  std::string content_type = "application/json";
+  std::string body;
+};
+
+inline HttpResponse json_response(int status, const std::string& json_str) {
+  return HttpResponse{status, "application/json", json_str};
+}
+
+inline HttpResponse gzip_response(int status, const std::vector<uint8_t>& data) {
+  return HttpResponse{status, "application/gzip", std::string(reinterpret_cast<const char*>(data.data()), data.size())};
+}
+
 class MockHttpServer {
  public:
   struct RecordedRequest {
@@ -130,51 +146,57 @@ class MockHttpServer {
     std::string body;
   };
 
-  using Handler = std::function<web::http::http_response(const RecordedRequest&)>;
+  using Handler = std::function<HttpResponse(const RecordedRequest&)>;
 
-  explicit MockHttpServer(int port)
-      : port_(port),
-        listener_(utility::conversions::to_string_t("http://127.0.0.1:" + std::to_string(port))) {
-    listener_.support([this](web::http::http_request req) {
-      RecordedRequest rec;
-      rec.method = utility::conversions::to_utf8string(req.method());
-      rec.path = utility::conversions::to_utf8string(req.relative_uri().path());
+  explicit MockHttpServer(int port) : port_(port), running_(false) {}
 
-      if (req.headers().has(utility::conversions::to_string_t("Authorization"))) {
-        rec.authorization_header = utility::conversions::to_utf8string(
-            req.headers()[utility::conversions::to_string_t("Authorization")]);
-      }
-      if (req.headers().has(utility::conversions::to_string_t("Accept"))) {
-        rec.accept_header = utility::conversions::to_utf8string(
-            req.headers()[utility::conversions::to_string_t("Accept")]);
-      }
-      if (req.headers().has(utility::conversions::to_string_t("Content-Type"))) {
-        rec.content_type = utility::conversions::to_utf8string(
-            req.headers()[utility::conversions::to_string_t("Content-Type")]);
-      }
-      rec.body = req.extract_utf8string(true).get();
-
-      std::lock_guard<std::mutex> lock(mutex_);
-      recorded_requests_.push_back(rec);
-
-      web::http::http_response resp;
-      if (handler_) {
-        resp = handler_(rec);
-      } else {
-        resp.set_status_code(web::http::status_codes::NotFound);
-      }
-      req.reply(resp).wait();
-    });
+  ~MockHttpServer() {
+    stop();
   }
 
   void start() {
-    listener_.open().wait();
+    running_ = true;
+    server_thread_ = std::thread(&MockHttpServer::run_server, this);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
   void stop() {
-    try {
-      listener_.close().wait();
-    } catch (...) {
+    if (running_) {
+      running_ = false;
+#ifdef _WIN32
+      if (server_fd_ != INVALID_SOCKET) {
+        shutdown(server_fd_, SD_BOTH);
+        closesocket(server_fd_);
+        server_fd_ = INVALID_SOCKET;
+      }
+      SOCKET dummy_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+      if (dummy_sock != INVALID_SOCKET) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(static_cast<uint16_t>(port_));
+        connect(dummy_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        closesocket(dummy_sock);
+      }
+#else
+      if (server_fd_ >= 0) {
+        shutdown(server_fd_, SHUT_RDWR);
+        close(server_fd_);
+        server_fd_ = -1;
+      }
+      int dummy_sock = socket(AF_INET, SOCK_STREAM, 0);
+      if (dummy_sock >= 0) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = htons(static_cast<uint16_t>(port_));
+        connect(dummy_sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+        close(dummy_sock);
+      }
+#endif
+      if (server_thread_.joinable()) {
+        server_thread_.join();
+      }
     }
   }
 
@@ -198,26 +220,161 @@ class MockHttpServer {
   }
 
  private:
+  void run_server() {
+#ifdef _WIN32
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+    server_fd_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#else
+    server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+#endif
+    if (server_fd_ < 0) return;
+
+    int opt = 1;
+#ifdef _WIN32
+    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&opt), sizeof(opt));
+#else
+    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(static_cast<uint16_t>(port_));
+
+    if (bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+#ifdef _WIN32
+      closesocket(server_fd_);
+#else
+      close(server_fd_);
+#endif
+      return;
+    }
+
+    if (listen(server_fd_, 10) != 0) return;
+
+    while (running_) {
+      sockaddr_in client_addr{};
+      socklen_t client_len = sizeof(client_addr);
+#ifdef _WIN32
+      SOCKET client_sock = accept(server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+      if (client_sock == INVALID_SOCKET) break;
+#else
+      int client_sock = accept(server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
+      if (client_sock < 0) break;
+#endif
+
+      std::string raw_req;
+      char buf[4096];
+      while (true) {
+        int n = recv(client_sock, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        raw_req.append(buf, n);
+        auto header_end = raw_req.find("\r\n\r\n");
+        if (header_end != std::string::npos) {
+          auto cl_pos = raw_req.find("Content-Length: ");
+          if (cl_pos == std::string::npos) cl_pos = raw_req.find("content-length: ");
+          if (cl_pos != std::string::npos) {
+            auto cl_end = raw_req.find("\r\n", cl_pos);
+            int cl = std::stoi(raw_req.substr(cl_pos + 16, cl_end - (cl_pos + 16)));
+            if (raw_req.size() >= header_end + 4 + cl) {
+              break;
+            }
+          } else {
+            break;
+          }
+        }
+      }
+
+      if (raw_req.empty()) {
+#ifdef _WIN32
+        closesocket(client_sock);
+#else
+        close(client_sock);
+#endif
+        continue;
+      }
+
+      RecordedRequest rec;
+      auto header_end = raw_req.find("\r\n\r\n");
+      std::string header_part = raw_req.substr(0, header_end);
+      if (header_end != std::string::npos && header_end + 4 < raw_req.size()) {
+        rec.body = raw_req.substr(header_end + 4);
+      }
+
+      std::istringstream stream(header_part);
+      std::string req_line;
+      if (std::getline(stream, req_line)) {
+        if (!req_line.empty() && req_line.back() == '\r') req_line.pop_back();
+        std::istringstream req_stream(req_line);
+        std::string method, path;
+        req_stream >> method >> path;
+        rec.method = method;
+        rec.path = path;
+      }
+
+      std::string line;
+      while (std::getline(stream, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto colon = line.find(':');
+        if (colon != std::string::npos) {
+          std::string name = line.substr(0, colon);
+          std::string val = line.substr(colon + 1);
+          while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+          std::string lower_name = name;
+          std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+          if (lower_name == "authorization") rec.authorization_header = val;
+          else if (lower_name == "accept") rec.accept_header = val;
+          else if (lower_name == "content-type") rec.content_type = val;
+        }
+      }
+
+      HttpResponse resp;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        recorded_requests_.push_back(rec);
+        if (handler_) {
+          resp = handler_(rec);
+        } else {
+          resp.status_code = 404;
+        }
+      }
+
+      std::string status_msg = "OK";
+      if (resp.status_code == 400) status_msg = "Bad Request";
+      else if (resp.status_code == 401) status_msg = "Unauthorized";
+      else if (resp.status_code == 404) status_msg = "Not Found";
+      else if (resp.status_code == 422) status_msg = "Unprocessable Entity";
+      else if (resp.status_code == 500) status_msg = "Internal Server Error";
+
+      std::string raw_resp = "HTTP/1.1 " + std::to_string(resp.status_code) + " " + status_msg + "\r\n";
+      raw_resp += "Content-Type: " + resp.content_type + "\r\n";
+      raw_resp += "Content-Length: " + std::to_string(resp.body.size()) + "\r\n";
+      raw_resp += "Connection: close\r\n\r\n";
+      raw_resp += resp.body;
+
+      send(client_sock, raw_resp.data(), static_cast<int>(raw_resp.size()), 0);
+#ifdef _WIN32
+      closesocket(client_sock);
+#else
+      close(client_sock);
+#endif
+    }
+  }
+
   int port_;
-  web::http::experimental::listener::http_listener listener_;
+  std::atomic<bool> running_;
+#ifdef _WIN32
+  SOCKET server_fd_ = INVALID_SOCKET;
+#else
+  int server_fd_ = -1;
+#endif
+  std::thread server_thread_;
   std::mutex mutex_;
   Handler handler_;
   std::vector<RecordedRequest> recorded_requests_;
 };
-
-web::http::http_response json_response(web::http::status_code status, const std::string& json_str) {
-  web::http::http_response resp(status);
-  resp.headers().set_content_type(utility::conversions::to_string_t("application/json"));
-  resp.set_body(utility::conversions::to_string_t(json_str));
-  return resp;
-}
-
-web::http::http_response gzip_response(web::http::status_code status, const std::vector<uint8_t>& data) {
-  web::http::http_response resp(status);
-  resp.headers().set_content_type(utility::conversions::to_string_t("application/gzip"));
-  resp.set_body(data);
-  return resp;
-}
 
 /// Helper to create a POSIX ustar tar archive in-memory
 std::string create_tar_archive(const std::vector<std::pair<std::string, std::string>>& files) {
@@ -227,26 +384,16 @@ std::string create_tar_archive(const std::vector<std::pair<std::string, std::str
     const std::string& content = item.second;
 
     char hdr[512] = {};
-    // Filename (offset 0, 100 bytes)
     std::strncpy(hdr, name.c_str(), std::min<std::size_t>(name.size(), 99));
-    // File mode (offset 100, 8 bytes)
     std::snprintf(hdr + 100, 8, "%07o", 0644);
-    // UID (offset 108, 8 bytes)
     std::snprintf(hdr + 108, 8, "%07o", 0);
-    // GID (offset 116, 8 bytes)
     std::snprintf(hdr + 116, 8, "%07o", 0);
-    // File size in octal (offset 124, 12 bytes)
-    std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(content.size()));
-    // Mtime (offset 136, 12 bytes)
+    std::snprintf(hdr + 124, 12, "%011o", static_cast<unsigned int>(content.size()));
     std::snprintf(hdr + 136, 12, "%011lo", 0L);
-    // Typeflag (offset 156): '0' for regular file
     hdr[156] = '0';
-    // Magic (offset 257, 6 bytes): "ustar\0" or "ustar "
     std::memcpy(hdr + 257, "ustar ", 6);
-    // Version (offset 263, 2 bytes): " \0"
     std::memcpy(hdr + 263, " \0", 2);
 
-    // Calculate checksum treating checksum field (148..155) as 8 spaces
     std::memset(hdr + 148, ' ', 8);
     unsigned int checksum = 0;
     for (int i = 0; i < 512; ++i) {
@@ -261,7 +408,6 @@ std::string create_tar_archive(const std::vector<std::pair<std::string, std::str
       tar.append(pad, '\0');
     }
   }
-  // Two 512-byte zero blocks marking end of archive
   tar.append(1024, '\0');
   return tar;
 }
@@ -419,20 +565,18 @@ int main() {
       TEST_ASSERT(req.content_type.find("application/json") != std::string::npos);
 
       // Verify request payload
-      auto json_body = web::json::value::parse(utility::conversions::to_string_t(req.body));
-      TEST_ASSERT(json_body.has_field(utility::conversions::to_string_t("content")));
-      TEST_ASSERT(json_body[utility::conversions::to_string_t("content")].as_string() ==
-                  utility::conversions::to_string_t("Costa Coffee Oxford St"));
-      TEST_ASSERT(json_body.has_field(utility::conversions::to_string_t("countryCode")));
-      TEST_ASSERT(json_body[utility::conversions::to_string_t("countryCode")].as_string() ==
-                  utility::conversions::to_string_t("GB"));
+      auto json_body = nlohmann::json::parse(req.body);
+      TEST_ASSERT(json_body.contains("content"));
+      TEST_ASSERT(json_body["content"].get<std::string>() == "Costa Coffee Oxford St");
+      TEST_ASSERT(json_body.contains("countryCode"));
+      TEST_ASSERT(json_body["countryCode"].get<std::string>() == "GB");
 
-      return json_response(web::http::status_codes::OK,
+      return json_response(200,
                            R"({
                              "merchant": "Costa Coffee",
                              "description": "British coffeehouse chain",
                              "categories": ["Food & Drink", "Coffee Shops", "Quick Service"],
-                             "logo": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+                             "logo": "data:image/png;base64,iVBORw0KGgoAAA...",
                              "location": "London, UK",
                              "address": "123 Oxford Street, London W1D 2HG"
                            })");
@@ -449,7 +593,7 @@ int main() {
     TEST_ASSERT(resp.categories[0] == "Food & Drink");
     TEST_ASSERT(resp.categories[1] == "Coffee Shops");
     TEST_ASSERT(resp.categories[2] == "Quick Service");
-    TEST_ASSERT(resp.logo == "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...");
+    TEST_ASSERT(resp.logo == "data:image/png;base64,iVBORw0KGgoAAA...");
     TEST_ASSERT(resp.location.has_value());
     TEST_ASSERT(resp.location.value() == "London, UK");
     TEST_ASSERT(resp.address.has_value());
@@ -466,7 +610,7 @@ int main() {
     std::cout << "[Test] enrichTransaction with optional fields absent\n";
     server.clear_requests();
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::OK,
+      return json_response(200,
                            R"({
                              "merchant": "Online Subscription",
                              "description": "SaaS service",
@@ -492,12 +636,11 @@ int main() {
     std::cout << "[Test] enrichTransaction HTTP error category mapping\n";
     // 400 Bad Request
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::BadRequest,
-                           R"({"error": "invalid content parameter"})");
+      return json_response(400, R"({"error": "invalid content parameter"})");
     });
 
     try {
-      client.enrichTransaction({"bad-input", "GB"});
+      (void)client.enrichTransaction({"bad-input", "GB"});
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -507,11 +650,10 @@ int main() {
 
     // 401 Unauthorized
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::Unauthorized,
-                           R"({"error": "invalid bearer token"})");
+      return json_response(401, R"({"error": "invalid bearer token"})");
     });
     try {
-      client.enrichTransaction({"test", "US"});
+      (void)client.enrichTransaction({"test", "US"});
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -520,11 +662,10 @@ int main() {
 
     // 404 Not Found
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::NotFound,
-                           R"({"error": "endpoint not found"})");
+      return json_response(404, R"({"error": "endpoint not found"})");
     });
     try {
-      client.enrichTransaction({"test", "US"});
+      (void)client.enrichTransaction({"test", "US"});
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -533,11 +674,10 @@ int main() {
 
     // 500 Internal Server Error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::InternalError,
-                           R"({"error": "server crash"})");
+      return json_response(500, R"({"error": "server crash"})");
     });
     try {
-      client.enrichTransaction({"test", "US"});
+      (void)client.enrichTransaction({"test", "US"});
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -553,7 +693,7 @@ int main() {
     // Empty vector validation check
     expects_error(xyo::ErrorCategory::validation,
                   "enrichTransactions: request list must not be empty", [&] {
-                    client.enrichTransactions({});
+                    (void)client.enrichTransactions({});
                   });
 
     // Valid bulk request
@@ -563,11 +703,11 @@ int main() {
       TEST_ASSERT(req.path == "/v1/ai/finance/enrichment/transactions");
       TEST_ASSERT(req.authorization_header == "Bearer xyo-secret-test-bearer-token-12345");
 
-      auto json_body = web::json::value::parse(utility::conversions::to_string_t(req.body));
+      auto json_body = nlohmann::json::parse(req.body);
       TEST_ASSERT(json_body.is_array());
-      TEST_ASSERT(json_body.as_array().size() == 2);
+      TEST_ASSERT(json_body.size() == 2);
 
-      return json_response(web::http::status_codes::OK,
+      return json_response(200,
                            R"({
                              "id": "job-bulk-98765",
                              "link": "https://api.xyo.financial/downloads/results-98765.tar.gz"
@@ -593,11 +733,10 @@ int main() {
 
     // HTTP 422 Bulk Error mapping
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(static_cast<web::http::status_code>(422),
-                           R"({"error": "batch size exceeds limit"})");
+      return json_response(422, R"({"error": "batch size exceeds limit"})");
     });
     try {
-      client.enrichTransactions(bulk_reqs);
+      (void)client.enrichTransactions(bulk_reqs);
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -613,7 +752,7 @@ int main() {
     // Empty id validation check
     expects_error(xyo::ErrorCategory::validation,
                   "getEnrichmentStatus: id must not be empty", [&] {
-                    client.getEnrichmentStatus("");
+                    (void)client.getEnrichmentStatus("");
                   });
 
     // PENDING state
@@ -622,36 +761,36 @@ int main() {
       TEST_ASSERT(req.method == "GET");
       TEST_ASSERT(req.path == "/v1/ai/finance/enrichment/status/job-bulk-98765");
       TEST_ASSERT(req.authorization_header == "Bearer xyo-secret-test-bearer-token-12345");
-      return json_response(web::http::status_codes::OK, R"({"status": "PENDING"})");
+      return json_response(200, R"({"status": "PENDING"})");
     });
     TEST_ASSERT(client.getEnrichmentStatus("job-bulk-98765") == xyo::EnrichmentStatus::pending);
 
     // READY state
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::OK, R"({"status": "READY"})");
+      return json_response(200, R"({"status": "READY"})");
     });
     TEST_ASSERT(client.getEnrichmentStatus("job-bulk-98765") == xyo::EnrichmentStatus::ready);
 
     // FAILED state
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::OK, R"({"status": "FAILED"})");
+      return json_response(200, R"({"status": "FAILED"})");
     });
     TEST_ASSERT(client.getEnrichmentStatus("job-bulk-98765") == xyo::EnrichmentStatus::failed);
 
     // Unrecognised status string mapping
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::OK, R"({"status": "UNKNOWN_CUSTOM_STATE"})");
+      return json_response(200, R"({"status": "UNKNOWN_CUSTOM_STATE"})");
     });
-    expects_error(xyo::ErrorCategory::parsing, "Parsing error from getEnrichmentStatus", [&] {
-      client.getEnrichmentStatus("job-bulk-98765");
+    expects_error(xyo::ErrorCategory::parsing, "unrecognised status value", [&] {
+      (void)client.getEnrichmentStatus("job-bulk-98765");
     });
 
     // HTTP 404 Job Not Found error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::NotFound, R"({"error": "Job not found"})");
+      return json_response(404, R"({"error": "Job not found"})");
     });
     try {
-      client.getEnrichmentStatus("nonexistent-job");
+      (void)client.getEnrichmentStatus("nonexistent-job");
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
@@ -664,13 +803,12 @@ int main() {
   // ---------------------------------------------------------------------------
   {
     std::cout << "[Test] Transport error handling\n";
-    // Point client to a port with no listening server
     int unreachable_port = get_free_port();
     xyo::Client unreachable_client(
         xyo::ClientConfig("valid-key", "http://127.0.0.1:" + std::to_string(unreachable_port)));
 
     try {
-      unreachable_client.enrichTransaction({"test", "GB"});
+      (void)unreachable_client.enrichTransaction({"test", "GB"});
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
@@ -720,7 +858,7 @@ int main() {
       TEST_ASSERT(req.method == "GET");
       TEST_ASSERT(req.path == "/downloads/results-98765.tar.gz");
       TEST_ASSERT(req.accept_header.find("application/gzip") != std::string::npos);
-      return gzip_response(web::http::status_codes::OK, gzipped);
+      return gzip_response(200, gzipped);
     });
 
     // 9a. Full URL download
@@ -782,7 +920,7 @@ int main() {
 
     // 10b. HTTP 401 Unauthorized
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::Unauthorized, R"({"error": "Unauthorized"})");
+      return json_response(401, R"({"error": "Unauthorized"})");
     });
     try {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/results-98765.tar.gz");
@@ -794,7 +932,7 @@ int main() {
 
     // 10c. HTTP 404 Not Found
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::NotFound, R"({"error": "Archive not found"})");
+      return json_response(404, R"({"error": "Archive not found"})");
     });
     try {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/nonexistent.tar.gz");
@@ -806,7 +944,7 @@ int main() {
 
     // 10d. HTTP 500 Internal Server Error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return json_response(web::http::status_codes::InternalError, R"({"error": "Internal server error"})");
+      return json_response(500, R"({"error": "Internal server error"})");
     });
     try {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/error.tar.gz");
@@ -818,10 +956,7 @@ int main() {
 
     // 10e. Empty body parsing error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      web::http::http_response resp(web::http::status_codes::OK);
-      resp.headers().set_content_type(utility::conversions::to_string_t("application/gzip"));
-      resp.set_body(std::vector<uint8_t>{});
-      return resp;
+      return HttpResponse{200, "application/gzip", ""};
     });
     expects_error(xyo::ErrorCategory::parsing, "empty response body", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/empty.tar.gz");
@@ -831,7 +966,7 @@ int main() {
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       std::string corrupt = "this is not valid gzip compressed data at all";
       std::vector<uint8_t> data(corrupt.begin(), corrupt.end());
-      return gzip_response(web::http::status_codes::OK, data);
+      return gzip_response(200, data);
     });
     expects_error(xyo::ErrorCategory::parsing, "gzip decompression failed", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/corrupted.tar.gz");
@@ -852,7 +987,7 @@ int main() {
       std::string partial_tar(hdr, 512);
       partial_tar.append(100, 'x'); // only 100 bytes of 1000 bytes declared
       auto gz = gzip_compress(partial_tar);
-      return gzip_response(web::http::status_codes::OK, gz);
+      return gzip_response(200, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "truncated tar archive", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/truncated.tar.gz");
@@ -863,7 +998,7 @@ int main() {
       std::string bad_json = "{ merchant: invalid json }";
       std::string tar = create_tar_archive({{"bad.json", bad_json}});
       auto gz = gzip_compress(tar);
-      return gzip_response(web::http::status_codes::OK, gz);
+      return gzip_response(200, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "JSON parse error", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/badjson.tar.gz");
@@ -874,7 +1009,7 @@ int main() {
       std::string incomplete_json = R"({"description": "no merchant"})";
       std::string tar = create_tar_archive({{"incomplete.json", incomplete_json}});
       auto gz = gzip_compress(tar);
-      return gzip_response(web::http::status_codes::OK, gz);
+      return gzip_response(200, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "missing field: merchant", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
@@ -902,13 +1037,12 @@ int main() {
       std::snprintf(hdr + 100, 8, "%07o", 0644);
       std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(10));
       hdr[156] = '0';
-      // Deliberately set incorrect checksum
       std::snprintf(hdr + 148, 8, "%06o", 12345);
 
       std::string corrupt_tar(hdr, 512);
       corrupt_tar.append(512, '\0');
       auto gz = gzip_compress(corrupt_tar);
-      return gzip_response(web::http::status_codes::OK, gz);
+      return gzip_response(200, gz);
     });
     expects_error(xyo::ErrorCategory::parsing, "tar header checksum mismatch", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
@@ -916,10 +1050,7 @@ int main() {
 
     // 10m. WAF Security Challenge HTML Response
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      web::http::http_response resp(web::http::status_codes::OK);
-      resp.headers().set_content_type(utility::conversions::to_string_t("text/html; charset=UTF-8"));
-      resp.set_body("<html><body><h1>Cloudflare Security Challenge</h1></body></html>");
-      return resp;
+      return HttpResponse{200, "text/html; charset=UTF-8", "<html><body><h1>Cloudflare Security Challenge</h1></body></html>"};
     });
     expects_error(xyo::ErrorCategory::http, "unexpected Content-Type", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/waf.tar.gz");
@@ -948,7 +1079,7 @@ int main() {
     ::unsetenv("XYO_API_BASE_URL");
     #endif
 
-    // 10o. Tar Zip Slip / path traversal entry is safely ignored
+    // 10p. Tar Zip Slip / path traversal entry is safely ignored
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       std::string safe_json = R"({"merchant":"SafeCo","description":"Safe","logo":"url","categories":[]})";
       std::string evil_json = R"({"merchant":"EvilCo","description":"Evil","logo":"url","categories":[]})";
@@ -958,7 +1089,7 @@ int main() {
           {"valid.json", safe_json}
       });
       auto gz = gzip_compress(tar);
-      return gzip_response(web::http::status_codes::OK, gz);
+      return gzip_response(200, gz);
     });
     {
       auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
