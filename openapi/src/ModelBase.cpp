@@ -289,12 +289,12 @@ bool ModelBase::fromJson( const web::json::value& val, double & outVal )
 }
 bool ModelBase::fromJson( const web::json::value& val, int32_t & outVal )
 {
-    outVal = !val.is_integer() ? 0 : val.as_integer();
+    outVal = !val.is_integer() ? std::numeric_limits<int32_t>::quiet_NaN() : val.as_integer();
     return val.is_integer();
 }
 bool ModelBase::fromJson( const web::json::value& val, int64_t & outVal )
 {
-    outVal = !val.is_number() ? 0 : val.as_number().to_int64();
+    outVal = !val.is_number() ? std::numeric_limits<int64_t>::quiet_NaN() : val.as_number().to_int64();
     return val.is_number();
 }
 bool ModelBase::fromJson( const web::json::value& val, utility::string_t & outVal )
@@ -315,13 +315,13 @@ bool ModelBase::fromJson( const web::json::value& val, web::json::value & outVal
 bool ModelBase::fromJson( const web::json::value& val, std::shared_ptr<HttpContent>& content )
 {
     bool result = false;
-    if(content == nullptr)
-    {
-        content = std::shared_ptr<HttpContent>(new HttpContent());
-    }
     if( content != nullptr)
     {
         result = true;
+        if(content == nullptr)
+        {
+            content = std::shared_ptr<HttpContent>(new HttpContent());
+        }
         if(val.has_field(utility::conversions::to_string_t("ContentDisposition")))
         {
             utility::string_t value;

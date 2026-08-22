@@ -122,7 +122,6 @@ const utility::string_t EnrichmentCollectionStatusResponse::fromStatusEnum(const
         
         case StatusEnum::PENDING: return utility::conversions::to_string_t("PENDING");
         
-        default: throw std::invalid_argument("Unknown StatusEnum value");
     }
 }
 
