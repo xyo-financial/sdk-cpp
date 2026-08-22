@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout SDK repository
@@ -41,7 +42,8 @@ jobs:
             build-essential \
             libcpprest-dev \
             libboost-all-dev \
-            libssl-dev
+            libssl-dev \
+            libcurl4-openssl-dev
 
       - name: Generate OpenAPI C++ client (cpp-restsdk)
         run: |
@@ -71,8 +73,12 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
-      - name: Commit regenerated client
-        uses: stefanzweifel/git-auto-commit-action@v5
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit_message: "chore: regenerate OpenAPI client from spec ${{ github.event.client_payload.tag || inputs.spec_tag || 'latest' }}"
-          file_pattern: "openapi/**"
+          token: ${{ secrets.SDK_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: "chore: regenerate OpenAPI client from spec ${{ github.event.client_payload.tag || inputs.spec_tag || 'latest' }}"
+          title: "Automated SDK Update"
+          body: "This PR automatically updates the generated C++ client based on OpenAPI spec ${{ github.event.client_payload.tag || inputs.spec_tag || 'latest' }}."
+          branch: "chore/auto-update-sdk"
+          delete-branch: true
