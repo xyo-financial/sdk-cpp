@@ -1,0 +1,108 @@
+name: vcpkg Packaging & Multi-Platform Matrix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vcpkg-matrix:
+    name: vcpkg (${{ matrix.triplet }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            triplet: x64-linux
+          # macOS
+          - os: macos-latest
+            triplet: arm64-osx
+          # Windows
+          - os: windows-2022
+            triplet: x64-windows
+          - os: windows-2022
+            triplet: x64-windows-static
+          - os: windows-2022
+            triplet: x64-windows-static-md
+          - os: windows-2022
+            triplet: x86-windows
+          # Android Cross-Compilation
+          - os: ubuntu-latest
+            triplet: arm64-android
+          - os: ubuntu-latest
+            triplet: x64-android
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+
+      - name: Setup System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev pkg-config zip unzip tar
+
+      - name: Setup System Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja pkg-config
+
+      - name: Setup MSVC Developer Command Prompt (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ contains(matrix.triplet, 'x86') && 'x86' || 'x64' }}
+
+      - name: Setup Android NDK (Android triplets)
+        if: contains(matrix.triplet, 'android')
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME" >> $GITHUB_ENV
+
+      - name: Setup & Bootstrap vcpkg
+        shell: bash
+        run: |
+          if [ ! -d "vcpkg" ]; then
+            git clone --depth 1 https://github.com/microsoft/vcpkg.git vcpkg
+          fi
+          cd vcpkg
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./bootstrap-vcpkg.bat -disableMetrics
+          else
+            ./bootstrap-vcpkg.sh -disableMetrics
+          fi
+
+      - name: Install xyo-sdk via vcpkg Overlay Port
+        shell: bash
+        run: |
+          ./vcpkg/vcpkg install xyo-sdk \
+            --overlay-ports=./packaging/vcpkg \
+            --triplet ${{ matrix.triplet }}
+
+      - name: Build Consumer Sample (Non-Android)
+        if: "!contains(matrix.triplet, 'android')"
+        shell: bash
+        run: |
+          cmake -S tests/vcpkg_sample -B build-sample -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          cmake --build build-sample --config Release
+
+      - name: Run Consumer Executable (Host platforms)
+        if: matrix.triplet == 'x64-linux' || matrix.triplet == 'arm64-osx' || matrix.triplet == 'x64-windows' || matrix.triplet == 'x64-windows-static' || matrix.triplet == 'x64-windows-static-md' || matrix.triplet == 'x86-windows'
+        shell: bash
+        run: |
+          if [ -f "./build-sample/vcpkg_sample" ]; then
+            ./build-sample/vcpkg_sample
+          elif [ -f "./build-sample/Release/vcpkg_sample.exe" ]; then
+            ./build-sample/Release/vcpkg_sample.exe
+          elif [ -f "./build-sample/vcpkg_sample.exe" ]; then
+            ./build-sample/vcpkg_sample.exe
+          fi
