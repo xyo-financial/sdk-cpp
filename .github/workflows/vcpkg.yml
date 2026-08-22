@@ -57,6 +57,12 @@ jobs:
         run: |
           brew install ninja pkg-config
 
+      - name: Setup MSVC Developer Command Prompt (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ contains(matrix.triplet, 'x86') && 'x86' || 'x64' }}
+
       - name: Setup Android NDK (Android triplets)
         if: contains(matrix.triplet, 'android')
         run: |
@@ -86,8 +92,8 @@ jobs:
         if: "!contains(matrix.triplet, 'android')"
         shell: bash
         run: |
-          cmake -S tests/vcpkg_sample -B build-sample -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake \
+          cmake -S tests/vcpkg_sample -B build-sample \
+            -DCMAKE_TOOLCHAIN_FILE=vcpkg/scripts/buildsystems/vcpkg.cmake \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           cmake --build build-sample --config Release
 
@@ -95,5 +101,10 @@ jobs:
         if: matrix.triplet == 'x64-linux' || matrix.triplet == 'arm64-osx' || matrix.triplet == 'x64-osx' || matrix.triplet == 'x64-windows'
         shell: bash
         run: |
-          cd build-sample
-          ./vcpkg_sample || ./Release/vcpkg_sample.exe || true
+          if [ -f "./build-sample/vcpkg_sample" ]; then
+            ./build-sample/vcpkg_sample
+          elif [ -f "./build-sample/Release/vcpkg_sample.exe" ]; then
+            ./build-sample/Release/vcpkg_sample.exe
+          elif [ -f "./build-sample/vcpkg_sample.exe" ]; then
+            ./build-sample/vcpkg_sample.exe
+          fi
