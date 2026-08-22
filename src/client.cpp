@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -39,6 +40,15 @@ void secure_erase(std::string& str) noexcept {
   }
 }
 
+inline bool is_valid_header_value(const std::string& val) {
+  for (unsigned char c : val) {
+    if (c != 0x09 && (c < 32 || c > 126)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 inline void validate_request(const EnrichmentRequest& req, const char* op_name) {
   if (req.content.empty()) {
     throw Error(ErrorCategory::validation,
@@ -55,6 +65,134 @@ inline void validate_request(const EnrichmentRequest& req, const char* op_name) 
   if (req.country_code.size() != 2) {
     throw Error(ErrorCategory::validation,
                 std::string(op_name) + ": request country_code must be a 2-letter ISO 3166-1 alpha-2 code");
+  }
+}
+
+inline void validate_batch_size(std::size_t size, std::size_t max_collection_size) {
+  if (size == 0) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: request list must not be empty (must contain between 1 and 50000 items)");
+  }
+  if (size > 50'000) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(size) +
+                " exceeds maximum limit of 50000 items");
+  }
+  if (size > max_collection_size) {
+    throw Error(ErrorCategory::validation,
+                "enrichTransactions: batch size " + std::to_string(size) +
+                " exceeds configured max_collection_size of " +
+                std::to_string(max_collection_size));
+  }
+}
+
+inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& headers) {
+  RateLimitInfo info;
+  bool found = false;
+
+  auto find_val = [&](const std::initializer_list<const char*>& keys) -> std::optional<std::string> {
+    for (const char* key : keys) {
+      auto it = headers.find(key);
+      if (it != headers.end()) {
+        return it->second;
+      }
+    }
+    return std::nullopt;
+  };
+
+  if (auto val = find_val({"retry-after"})) {
+    try {
+      info.retry_after = std::stoll(*val);
+      found = true;
+    } catch (const std::invalid_argument&) {
+      // Retry-After may be an HTTP-date string (RFC 7231 §7.1.3) rather than a
+      // delta-seconds integer. Date-string parsing is not implemented; the field
+      // is left unset so callers should treat a missing retry_after as unknown.
+    } catch (const std::out_of_range&) {
+    }
+  }
+  if (auto val = find_val({"ratelimit-limit", "x-ratelimit-limit"})) {
+    try {
+      info.limit = std::stoll(*val);
+      found = true;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
+  }
+  if (auto val = find_val({"ratelimit-remaining", "x-ratelimit-remaining"})) {
+    try {
+      info.remaining = std::stoll(*val);
+      found = true;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
+  }
+  if (auto val = find_val({"ratelimit-reset", "x-ratelimit-reset"})) {
+    try {
+      info.reset = std::stoll(*val);
+      found = true;
+    } catch (const std::invalid_argument&) {
+    } catch (const std::out_of_range&) {
+    }
+  }
+
+  if (found) return info;
+  return std::nullopt;
+}
+
+inline cpr::Header build_headers(const std::string& api_key,
+                                 const std::string& content_type,
+                                 const std::string& accept,
+                                 const EnrichmentRequestOptions& options) {
+  cpr::Header headers;
+  if (!api_key.empty()) {
+    headers.insert({"Authorization", "Bearer " + api_key});
+  }
+  if (!content_type.empty()) {
+    headers.insert({"Content-Type", content_type});
+  }
+  if (!accept.empty()) {
+    headers.insert({"Accept", accept});
+  }
+  if (options.x_correlation_id.has_value() && !options.x_correlation_id->empty()) {
+    if (!is_valid_header_value(options.x_correlation_id.value())) {
+      throw Error(ErrorCategory::validation, "x_correlation_id contains invalid header characters");
+    }
+    headers.insert({"x-correlation-id", options.x_correlation_id.value()});
+  }
+  if (options.traceparent.has_value() && !options.traceparent->empty()) {
+    if (!is_valid_header_value(options.traceparent.value())) {
+      throw Error(ErrorCategory::validation, "traceparent contains invalid header characters");
+    }
+    headers.insert({"traceparent", options.traceparent.value()});
+  }
+  if (options.x_api_user.has_value() && !options.x_api_user->empty()) {
+    if (!is_valid_header_value(options.x_api_user.value())) {
+      throw Error(ErrorCategory::validation, "x_api_user contains invalid header characters");
+    }
+    headers.insert({"x-api-user", options.x_api_user.value()});
+  }
+  return headers;
+}
+
+inline void check_and_throw_http_error(const cpr::Response& res, const char* op_name) {
+  if (res.status_code == 429) {
+    auto rli = parse_rate_limit_info(res.header);
+    throw Error(ErrorCategory::rate_limit,
+                "HTTP 429 Rate Limit Exceeded from " + std::string(op_name) + ": " + res.text,
+                res.status_code, 0, rli);
+  }
+  if (res.status_code >= 400) {
+    auto rli = parse_rate_limit_info(res.header);
+    throw Error(ErrorCategory::http,
+                "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + ": " + res.text,
+                res.status_code, 0, rli);
+  }
+  if (res.status_code != 0 && res.status_code != 200) {
+    throw Error(ErrorCategory::http,
+                "Unexpected HTTP status from " + std::string(op_name) + ": HTTP " +
+                    std::to_string(res.status_code) + " (expected 200)",
+                res.status_code);
   }
 }
 
@@ -123,8 +261,19 @@ std::string to_string(EnrichmentStatus status) {
     case EnrichmentStatus::ready:   return "READY";
     case EnrichmentStatus::failed:  return "FAILED";
     case EnrichmentStatus::pending: return "PENDING";
+    default:                        return "UNKNOWN";
   }
-  return "UNKNOWN";
+}
+
+std::string to_string(ErrorCategory category) {
+  switch (category) {
+    case ErrorCategory::validation: return "validation";
+    case ErrorCategory::transport:  return "transport";
+    case ErrorCategory::http:       return "http";
+    case ErrorCategory::parsing:    return "parsing";
+    case ErrorCategory::rate_limit: return "rate_limit";
+    default:                        return "unknown";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -178,11 +327,13 @@ ClientConfig::~ClientConfig() noexcept {
 // ---------------------------------------------------------------------------
 
 Error::Error(ErrorCategory category, const std::string& message,
-             long http_status_code, int transport_code)
+             long http_status_code, int transport_code,
+             std::optional<RateLimitInfo> rate_limit_info)
     : std::runtime_error(message),
       category_(category),
       http_status_code_(http_status_code),
-      transport_code_(transport_code) {}
+      transport_code_(transport_code),
+      rate_limit_info_(std::move(rate_limit_info)) {}
 
 // ---------------------------------------------------------------------------
 // Client::Impl
@@ -212,7 +363,9 @@ Client::~Client() noexcept = default;
 // ---------------------------------------------------------------------------
 // enrichTransaction – single transaction, synchronous.
 // ---------------------------------------------------------------------------
-EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) const {
+EnrichmentResponse Client::enrichTransaction(
+    const EnrichmentRequest& request,
+    const EnrichmentRequestOptions& options) const {
   validate_request(request, "enrichTransaction");
 
   nlohmann::json body = {
@@ -224,13 +377,11 @@ EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) c
   if (!url.empty() && url.back() == '/') url.pop_back();
   url += "/v1/ai/finance/enrichment/transaction";
 
+  cpr::Header headers = build_headers(impl_->config.api_key, "application/json", "application/json", options);
+
   cpr::Response res = cpr::Post(
       cpr::Url{url},
-      cpr::Header{
-          {"Authorization", "Bearer " + impl_->config.api_key},
-          {"Content-Type", "application/json"},
-          {"Accept", "application/json"}
-      },
+      headers,
       cpr::Body{body.dump()},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
@@ -241,11 +392,7 @@ EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) c
                 0, static_cast<int>(res.error.code));
   }
 
-  if (res.status_code >= 400) {
-    throw Error(ErrorCategory::http,
-                "HTTP error from enrichTransaction: HTTP " + std::to_string(res.status_code) + ": " + res.text,
-                res.status_code);
-  }
+  check_and_throw_http_error(res, "enrichTransaction");
 
   nlohmann::json json_data;
   try {
@@ -287,18 +434,10 @@ EnrichmentResponse Client::enrichTransaction(const EnrichmentRequest& request) c
 // enrichTransactions – bulk, async (returns a job handle).
 // ---------------------------------------------------------------------------
 BulkEnrichmentResponse Client::enrichTransactions(
-    const std::vector<EnrichmentRequest>& requests) const {
+    const std::vector<EnrichmentRequest>& requests,
+    const EnrichmentRequestOptions& options) const {
 
-  if (requests.empty()) {
-    throw Error(ErrorCategory::validation,
-                "enrichTransactions: request list must not be empty");
-  }
-  if (requests.size() > impl_->config.max_collection_size) {
-    throw Error(ErrorCategory::validation,
-                "enrichTransactions: batch size " + std::to_string(requests.size()) +
-                " exceeds configured max_collection_size of " +
-                std::to_string(impl_->config.max_collection_size));
-  }
+  validate_batch_size(requests.size(), impl_->config.max_collection_size);
 
   nlohmann::json body_array = nlohmann::json::array();
   for (const auto& r : requests) {
@@ -313,13 +452,11 @@ BulkEnrichmentResponse Client::enrichTransactions(
   if (!url.empty() && url.back() == '/') url.pop_back();
   url += "/v1/ai/finance/enrichment/transactions";
 
+  cpr::Header headers = build_headers(impl_->config.api_key, "application/json", "application/json", options);
+
   cpr::Response res = cpr::Post(
       cpr::Url{url},
-      cpr::Header{
-          {"Authorization", "Bearer " + impl_->config.api_key},
-          {"Content-Type", "application/json"},
-          {"Accept", "application/json"}
-      },
+      headers,
       cpr::Body{body_array.dump()},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
@@ -330,11 +467,7 @@ BulkEnrichmentResponse Client::enrichTransactions(
                 0, static_cast<int>(res.error.code));
   }
 
-  if (res.status_code >= 400) {
-    throw Error(ErrorCategory::http,
-                "HTTP error from enrichTransactions: HTTP " + std::to_string(res.status_code) + ": " + res.text,
-                res.status_code);
-  }
+  check_and_throw_http_error(res, "enrichTransactions");
 
   nlohmann::json json_data;
   try {
@@ -359,7 +492,9 @@ BulkEnrichmentResponse Client::enrichTransactions(
 // ---------------------------------------------------------------------------
 // getEnrichmentStatus – poll the status of an async bulk job.
 // ---------------------------------------------------------------------------
-EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
+EnrichmentStatus Client::getEnrichmentStatus(
+    const std::string& id,
+    const EnrichmentRequestOptions& options) const {
   if (id.empty()) {
     throw Error(ErrorCategory::validation,
                 "getEnrichmentStatus: id must not be empty");
@@ -369,12 +504,11 @@ EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
   if (!url.empty() && url.back() == '/') url.pop_back();
   url += "/v1/ai/finance/enrichment/status/" + id;
 
+  cpr::Header headers = build_headers(impl_->config.api_key, "", "application/json", options);
+
   cpr::Response res = cpr::Get(
       cpr::Url{url},
-      cpr::Header{
-          {"Authorization", "Bearer " + impl_->config.api_key},
-          {"Accept", "application/json"}
-      },
+      headers,
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
 
@@ -384,11 +518,7 @@ EnrichmentStatus Client::getEnrichmentStatus(const std::string& id) const {
                 0, static_cast<int>(res.error.code));
   }
 
-  if (res.status_code >= 400) {
-    throw Error(ErrorCategory::http,
-                "HTTP error from getEnrichmentStatus: HTTP " + std::to_string(res.status_code) + ": " + res.text,
-                res.status_code);
-  }
+  check_and_throw_http_error(res, "getEnrichmentStatus");
 
   nlohmann::json json_data;
   try {
@@ -593,7 +723,9 @@ xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
 }  // anonymous namespace
 
 std::vector<EnrichmentResponse>
-Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
+Client::downloadEnrichmentCollection(
+    const std::string& downloadUrl,
+    const EnrichmentRequestOptions& options) const {
   if (downloadUrl.empty()) {
     throw Error(ErrorCategory::validation,
                 "downloadEnrichmentCollection: downloadUrl must not be empty");
@@ -633,13 +765,11 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
                     "\" is not permitted for secure archive downloads");
   }
 
-  cpr::Header headers = {
-      {"Accept", "application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8"}
-  };
-
-  if (is_same_host && is_same_port) {
-    headers.insert({"Authorization", "Bearer " + impl_->config.api_key});
-  }
+  std::string auth_key = (is_same_host && is_same_port) ? impl_->config.api_key : "";
+  cpr::Header headers = build_headers(
+      auth_key, "",
+      "application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8",
+      options);
 
   cpr::Response response = cpr::Get(
       cpr::Url{full_url},
@@ -653,11 +783,7 @@ Client::downloadEnrichmentCollection(const std::string& downloadUrl) const {
                 0, static_cast<int>(response.error.code));
   }
 
-  if (response.status_code != 200) {
-    throw Error(ErrorCategory::http,
-                "downloadEnrichmentCollection: HTTP error",
-                response.status_code);
-  }
+  check_and_throw_http_error(response, "downloadEnrichmentCollection");
 
   auto ct_it = response.header.find("content-type");
   if (ct_it != response.header.end()) {

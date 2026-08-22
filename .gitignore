@@ -41,6 +41,8 @@ CMakeUserPresets.json
 
 # Conan files
 conan.lock
+conan*.cmake
+conanbuild*
 /test_package/build/
 /test_package/build-*/
 /test_package/cmake-build-*/
