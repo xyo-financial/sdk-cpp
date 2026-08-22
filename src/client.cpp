@@ -176,16 +176,20 @@ inline cpr::Header build_headers(const std::string& api_key,
 }
 
 inline void check_and_throw_http_error(const cpr::Response& res, const char* op_name) {
+  std::string body_text = res.text;
+  if (body_text.size() > 1000) {
+    body_text = body_text.substr(0, 1000) + "... (truncated)";
+  }
   if (res.status_code == 429) {
     auto rli = parse_rate_limit_info(res.header);
     throw Error(ErrorCategory::rate_limit,
-                "HTTP 429 Rate Limit Exceeded from " + std::string(op_name) + ": " + res.text,
+                "HTTP 429 Rate Limit Exceeded from " + std::string(op_name) + ": " + body_text,
                 res.status_code, 0, rli);
   }
   if (res.status_code >= 400) {
     auto rli = parse_rate_limit_info(res.header);
     throw Error(ErrorCategory::http,
-                "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + ": " + res.text,
+                "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + ": " + body_text,
                 res.status_code, 0, rli);
   }
   if (res.status_code != 0 && res.status_code != 200) {
@@ -206,7 +210,7 @@ struct ParsedUrl {
 
 ParsedUrl parse_url(const std::string& url_str) {
   ParsedUrl res;
-  if (url_str.find(' ') != std::string::npos) {
+  if (url_str.find('@') != std::string::npos || url_str.find(' ') != std::string::npos) {
     throw Error(ErrorCategory::validation, "downloadEnrichmentCollection: invalid URL format");
   }
   std::size_t scheme_end = url_str.find("://");
@@ -231,8 +235,18 @@ ParsedUrl parse_url(const std::string& url_str) {
   std::size_t port_pos = host_port.find(':');
   if (port_pos != std::string::npos) {
     res.host = host_port.substr(0, port_pos);
+    std::string port_str = host_port.substr(port_pos + 1);
+    if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
+      throw Error(ErrorCategory::validation, "downloadEnrichmentCollection: invalid URL format: bad port number");
+    }
     try {
-      res.port = std::stoi(host_port.substr(port_pos + 1));
+      int p = std::stoi(port_str);
+      if (p < 1 || p > 65535) {
+        throw Error(ErrorCategory::validation, "downloadEnrichmentCollection: invalid URL format: bad port number");
+      }
+      res.port = p;
+    } catch (const Error&) {
+      throw;
     } catch (...) {
       throw Error(ErrorCategory::validation, "downloadEnrichmentCollection: invalid URL format: bad port number");
     }
@@ -248,6 +262,45 @@ ParsedUrl parse_url(const std::string& url_str) {
     throw Error(ErrorCategory::validation, "downloadEnrichmentCollection: invalid URL format: missing host");
   }
   return res;
+}
+
+EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
+  EnrichmentResponse out;
+  if (!json_data.is_object()) {
+    return out;
+  }
+  if (json_data.contains("merchant") && json_data["merchant"].is_string()) {
+    out.merchant = json_data.value("merchant", "");
+  } else {
+    out.merchant = "";
+  }
+  if (json_data.contains("description") && json_data["description"].is_string()) {
+    out.description = json_data.value("description", "");
+  } else {
+    out.description = "";
+  }
+  if (json_data.contains("logo") && json_data["logo"].is_string()) {
+    out.logo = json_data.value("logo", "");
+  } else {
+    out.logo = "";
+  }
+
+  if (json_data.contains("categories") && json_data["categories"].is_array()) {
+    for (const auto& cat : json_data["categories"]) {
+      if (cat.is_string()) {
+        out.categories.push_back(cat.get<std::string>());
+      }
+    }
+  }
+
+  if (json_data.contains("location") && !json_data["location"].is_null() && json_data["location"].is_string()) {
+    out.location = json_data["location"].get<std::string>();
+  }
+  if (json_data.contains("address") && !json_data["address"].is_null() && json_data["address"].is_string()) {
+    out.address = json_data["address"].get<std::string>();
+  }
+
+  return out;
 }
 
 }  // anonymous namespace
@@ -383,6 +436,7 @@ EnrichmentResponse Client::enrichTransaction(
       cpr::Url{url},
       headers,
       cpr::Body{body.dump()},
+      cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
 
@@ -404,24 +458,7 @@ EnrichmentResponse Client::enrichTransaction(
 
   EnrichmentResponse out;
   try {
-    out.merchant    = json_data.value("merchant", "");
-    out.description = json_data.value("description", "");
-    out.logo        = json_data.value("logo", "");
-
-    if (json_data.contains("categories") && json_data["categories"].is_array()) {
-      for (const auto& cat : json_data["categories"]) {
-        if (cat.is_string()) {
-          out.categories.push_back(cat.get<std::string>());
-        }
-      }
-    }
-
-    if (json_data.contains("location") && !json_data["location"].is_null() && json_data["location"].is_string()) {
-      out.location = json_data["location"].get<std::string>();
-    }
-    if (json_data.contains("address") && !json_data["address"].is_null() && json_data["address"].is_string()) {
-      out.address = json_data["address"].get<std::string>();
-    }
+    out = parse_enrichment_response(json_data);
   } catch (const std::exception& e) {
     throw Error(ErrorCategory::parsing,
                 "Parsing error from enrichTransaction: " + std::string(e.what()));
@@ -458,6 +495,7 @@ BulkEnrichmentResponse Client::enrichTransactions(
       cpr::Url{url},
       headers,
       cpr::Body{body_array.dump()},
+      cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
 
@@ -509,6 +547,7 @@ EnrichmentStatus Client::getEnrichmentStatus(
   cpr::Response res = cpr::Get(
       cpr::Url{url},
       headers,
+      cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
 
@@ -688,36 +727,7 @@ xyo::EnrichmentResponse parse_enrichment_json(std::string_view json_view) {
                      std::string("downloadEnrichmentCollection: JSON parse error: ") + e.what());
   }
 
-  auto get_str = [&](const char* key) -> std::string {
-    if (!jv.contains(key) || !jv[key].is_string()) {
-      throw xyo::Error(xyo::ErrorCategory::parsing,
-                       std::string("downloadEnrichmentCollection: missing field: ") + key);
-    }
-    return jv[key].get<std::string>();
-  };
-
-  xyo::EnrichmentResponse out;
-  out.merchant    = get_str("merchant");
-  out.description = get_str("description");
-  out.logo        = get_str("logo");
-
-  if (jv.contains("categories") && jv["categories"].is_array()) {
-    for (const auto& cat : jv["categories"]) {
-      if (cat.is_string()) {
-        out.categories.push_back(cat.get<std::string>());
-      }
-    }
-  }
-
-  if (jv.contains("location") && !jv["location"].is_null() && jv["location"].is_string()) {
-    out.location = jv["location"].get<std::string>();
-  }
-
-  if (jv.contains("address") && !jv["address"].is_null() && jv["address"].is_string()) {
-    out.address = jv["address"].get<std::string>();
-  }
-
-  return out;
+  return parse_enrichment_response(jv);
 }
 
 }  // anonymous namespace
@@ -774,6 +784,7 @@ Client::downloadEnrichmentCollection(
   cpr::Response response = cpr::Get(
       cpr::Url{full_url},
       headers,
+      cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
 

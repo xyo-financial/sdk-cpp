@@ -1114,16 +1114,19 @@ int main() {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/badjson.tar.gz");
     });
 
-    // 10i. Missing required field in JSON entry
+    // 10i. Missing field in JSON entry defaults to empty string
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       std::string incomplete_json = R"({"description": "no merchant"})";
       std::string tar = create_tar_archive({{"incomplete.json", incomplete_json}});
       auto gz = gzip_compress(tar);
       return gzip_response(200, gz);
     });
-    expects_error(xyo::ErrorCategory::parsing, "missing field: merchant", [&] {
-      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
-    });
+    {
+      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/incomplete.tar.gz");
+      TEST_ASSERT(results.size() == 1);
+      TEST_ASSERT(results[0].merchant == "");
+      TEST_ASSERT(results[0].description == "no merchant");
+    }
 
     // 10j. Transport error for unreachable host
     int unreachable_port = get_free_port();
@@ -1135,9 +1138,23 @@ int main() {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::transport);
     }
 
-    // 10k. Malformed URL throws validation error
+    // 10k. Malformed URL throws validation error (spaces or userinfo @)
     expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
       (void)client.downloadEnrichmentCollection("http://invalid uri with spaces/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
+      (void)client.downloadEnrichmentCollection("http://user:password@127.0.0.1/downloads");
+    });
+
+    // 10k2. Invalid port numbers throw bad port number validation error
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:0/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:65536/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:abc/downloads");
     });
 
     // 10l. Tar header checksum mismatch
