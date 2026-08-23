@@ -7,7 +7,7 @@ Only the current major release line of the XYO C++ SDK receives active security 
 | Version | Supported | End of Security Support |
 | ------- | --------- | ----------------------- |
 | 2.x     | :white_check_mark: | Active                  |
-| < 2.0.0 | :x:                | End of Life (EOL)       |
+| < 2.1.0 | :x:                | End of Life (EOL)       |
 
 ## ⚙️ Language Standard & Compiler LTS Support Policy
 
