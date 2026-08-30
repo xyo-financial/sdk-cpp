@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/check_spec_coverage.py`, which fails when the upstream specification declares a request path the hand-written client does not issue.
 
 ### Fixed
+- Corrected the documented behaviour of `ClientConfig::connect_timeout_ms` in both the public header and the README. It was described as reserved and unused, when in fact it has been applied as the connection timeout on every request.
 - Corrected the Conan recipe version, which was still declared as `2.0.0` while CMake, the vcpkg port and the documentation were all at `2.1.0`. A local `conan create .` produced a mislabelled package as a result.
 
 ### Changed

@@ -538,8 +538,8 @@ The `xyo::ClientConfig` struct governs connection, authentication, and timeout p
 | :--- | :--- | :--- | :--- |
 | `api_key` | `std::string` | *(Required)* | Secret API Bearer token from the XYO dashboard |
 | `base_url` | `std::string` | `"https://api.xyo.financial"` | API gateway base endpoint URL |
-| `connect_timeout_ms` | `long` | `5000` (5s) | Reserved for future transport backends. Currently governed by `request_timeout_ms`. |
-| `request_timeout_ms` | `long` | `30000` (30s) | End-to-end HTTP request timeout in milliseconds |
+| `connect_timeout_ms` | `long` | `5000` (5s) | Timeout for establishing the connection alone, applied to every request |
+| `request_timeout_ms` | `long` | `30000` (30s) | End-to-end HTTP request timeout, connection included |
 | `max_collection_size` | `std::size_t` | `1000` | Maximum item limit per batch request |
 
 ---
