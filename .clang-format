@@ -64,9 +64,9 @@ IncludeBlocks: Regroup
 IncludeCategories:
   - Regex: '^<xyo/'
     Priority: 1
-  - Regex: '^<cpprest/'
+  - Regex: '^<cpr/'
     Priority: 2
-  - Regex: '^<boost/'
+  - Regex: '^<nlohmann/'
     Priority: 3
   - Regex: '^<[a-z_0-9]+>'
     Priority: 4

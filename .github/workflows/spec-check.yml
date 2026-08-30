@@ -1,0 +1,92 @@
+name: Verify SDK Against API Specification
+
+# The C++ SDK is hand-written on top of cpr, not machine-generated, so a spec
+# change cannot be applied automatically. This workflow reacts to the same
+# dispatch the specs repository already sends, verifies the client still covers
+# every declared path, and raises an issue when a maintainer needs to act.
+
+on:
+  repository_dispatch:
+    types: [spec_tagged, spec_updated]
+  workflow_dispatch:
+    inputs:
+      spec_ref:
+        description: 'Tag or branch in xyo-financial/specs to verify against'
+        required: false
+        default: 'main'
+
+jobs:
+  verify:
+    name: Verify Coverage & Build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    env:
+      SPEC_REF: ${{ github.event.client_payload.tag || inputs.spec_ref || 'main' }}
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+
+      - name: Checkout OpenAPI specification
+        uses: actions/checkout@v4
+        with:
+          repository: xyo-financial/specs
+          ref: ${{ env.SPEC_REF }}
+          path: specs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install specification tooling
+        run: pip install pyyaml
+
+      - name: Verify client covers every specification path
+        id: coverage
+        run: python3 scripts/check_spec_coverage.py specs/openapi.yml
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential cmake libcurl4-openssl-dev libssl-dev zlib1g-dev
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DXYO_BUILD_TESTS=ON
+
+      - name: Build SDK
+        run: cmake --build build --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Open drift issue
+        if: failure() && github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Label may not exist yet on a fresh repository; never fail the handler over it.
+          gh label create spec-drift \
+            --description "SDK has fallen behind the API specification" \
+            --color D93F0B 2>/dev/null || true
+
+          gh issue create \
+            --title "SDK is out of step with specification $SPEC_REF" \
+            --label "spec-drift" \
+            --body "$(cat <<EOF
+          The API specification was updated to \`$SPEC_REF\` and verification failed.
+
+          This SDK is hand-written, so the change has to be applied by hand:
+
+          1. Review the diff in [xyo-financial/specs](https://github.com/xyo-financial/specs) at \`$SPEC_REF\`.
+          2. Implement any new or changed operation in \`src/client.cpp\` and expose it in \`include/xyo/client.hpp\`.
+          3. Add coverage in \`tests/client_test.cpp\`.
+          4. Re-run this workflow to confirm.
+
+          Failing run: $RUN_URL
+          EOF
+          )"

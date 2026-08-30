@@ -8,16 +8,16 @@ To maintain strict performance, memory safety, ABI stability, and consistency ac
 
 ## 📑 Table of Contents
 
-1. [Two-Layer Architecture](#two-layer-architecture)
-   - [Generated Layer (`openapi/`)](#1-generated-layer-openapi)
-   - [Wrapper Layer (`include/xyo/client.hpp`, `src/client.cpp`)](#2-wrapper-layer-includexyoclienthpp-srcclientcpp)
+1. [Architecture](#architecture)
+   - [Public API (`include/xyo/client.hpp`)](#1-public-api-includexyoclienthpp)
+   - [Implementation (`src/client.cpp`)](#2-implementation-srcclientcpp)
 2. [Contribution Workflow & Decision Matrix](#contribution-workflow--decision-matrix)
    - [API & Data Model Changes](#api--data-model-changes)
    - [SDK Ergonomics, Helpers & Tests](#sdk-ergonomics-helpers--tests)
-3. [Code Generation](#code-generation)
-   - [Automated Cross-Repository Synchronization](#automated-cross-repository-synchronization)
-   - [Manual / Local Code Generation](#manual--local-code-generation)
-   - [Immutable Rule for Generated Code](#immutable-rule-for-generated-code)
+3. [Specification Synchronization](#specification-synchronization)
+   - [Automated Cross-Repository Verification](#automated-cross-repository-verification)
+   - [Running the Coverage Check Locally](#running-the-coverage-check-locally)
+   - [Applying a Specification Change](#applying-a-specification-change)
 4. [Prerequisites & Development Environment](#prerequisites--development-environment)
 5. [Build & Quality Gates](#build--quality-gates)
    - [1. CMake Build](#1-cmake-build)
@@ -31,9 +31,9 @@ To maintain strict performance, memory safety, ABI stability, and consistency ac
 
 ---
 
-## 🏗 Two-Layer Architecture
+## 🏗 Architecture
 
-The XYO C++ SDK is strictly organized into two distinct layers to separate machine-generated wire-protocol code from the developer-facing, idiomatic C++17 API.
+The XYO C++ SDK is hand-written against the [`xyo-financial/specs`](https://github.com/xyo-financial/specs) contract. It is **not** machine-generated: the public API is split from its implementation by the PIMPL idiom so that no third-party header ever reaches a consuming translation unit.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -42,18 +42,17 @@ The XYO C++ SDK is strictly organized into two distinct layers to separate machi
                                     │ #include <xyo/client.hpp>
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      Wrapper Layer (C++17 PIMPL)                       │
-│  - include/xyo/client.hpp (Public API, zero external headers)          │
-│  - src/client.cpp (PIMPL Implementation & Error Mapping)              │
-│  - Modern types: std::optional, std::string, std::vector, RAII        │
+│                    Public API (C++17, header-only surface)             │
+│  - include/xyo/client.hpp (zero external headers, stable ABI)          │
+│  - Domain structs, xyo::Error hierarchy, xyo::Client facade            │
 └───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Internal C++ delegation
+                                    │ std::unique_ptr<Impl> (PIMPL boundary)
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                     Generated Layer (Read-Only)                        │
-│  - openapi/ (Auto-generated via OpenAPI Generator cpp-restsdk)         │
-│  - DTO serialization, cpprestsdk ApiClient, Boost integration          │
-│  - ⚠️ STRICTLY READ-ONLY & IMMUTABLE: DO NOT EDIT OR FORMAT MANUALLY   │
+│                     Implementation (src/client.cpp)                    │
+│  - cpr / libcurl transport, nlohmann::json serialization               │
+│  - zlib gunzip + ustar parsing, OpenSSL key cleansing                  │
+│  - Validation, SSRF guards, error mapping                              │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │ HTTPS / REST (JSON)
                                     ▼
@@ -62,18 +61,17 @@ The XYO C++ SDK is strictly organized into two distinct layers to separate machi
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Generated Layer (`openapi/`)
-- **Source**: Automatically generated from upstream OpenAPI specifications in [`xyo-financial/specs`](https://github.com/xyo-financial/specs) using `openapi-generator-cli` with the `cpp-restsdk` generator target.
-- **Contents**: Low-level HTTP transport management, REST client bindings (`xyo_api::ApiClient`, `xyo_api::EnrichmentApi`), raw serialization logic, and JSON DTOs (`xyo_model::EnrichmentRequest`, `xyo_model::EnrichmentResponse`, `xyo_model::APIError`).
-- **Policy**: **STRICTLY READ-ONLY & IMMUTABLE**. Never make manual code edits or format files directly inside the `openapi/` directory. Any manual modifications will be permanently lost during the next specification synchronization run.
-
-### 2. Wrapper Layer (`include/xyo/client.hpp`, `src/client.cpp`)
+### 1. Public API (`include/xyo/client.hpp`)
 - **Design Pattern**: Pointer to Implementation (**PIMPL**) idiom (`std::unique_ptr<Impl> impl_`).
-- **Characteristics**:
-  - **Zero Leaky Abstractions**: Public headers (`include/xyo/client.hpp`) expose only standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). Third-party headers such as `<cpprest/*>` or `<boost/*>` are strictly isolated to `src/client.cpp`.
-  - **Type-Safe Domain Models**: Simple domain structs (`xyo::EnrichmentRequest`, `xyo::EnrichmentResponse`, `xyo::BulkEnrichmentResponse`, `xyo::EnrichmentStatus`).
-  - **Structured Error Hierarchy**: `xyo::Error` with strongly typed `xyo::ErrorCategory` (`validation`, `transport`, `http`, `parsing`) and HTTP status code accessors.
-  - **Synchronous & Asynchronous Ergonomics**: High-level methods `enrichTransaction()`, `enrichTransactions()`, and `getEnrichmentStatus()`.
+- **Zero Leaky Abstractions**: Exposes only standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). Third-party headers such as `<cpr/*>`, `<nlohmann/*>` and `<zlib.h>` are strictly confined to `src/client.cpp`.
+- **Type-Safe Domain Models**: Simple domain structs (`xyo::EnrichmentRequest`, `xyo::EnrichmentResponse`, `xyo::BulkEnrichmentResponse`, `xyo::EnrichmentStatus`).
+- **Structured Error Hierarchy**: `xyo::Error` with strongly typed `xyo::ErrorCategory` (`validation`, `transport`, `http`, `parsing`, `rate_limit`), HTTP status code accessors and optional `xyo::RateLimitInfo`.
+
+### 2. Implementation (`src/client.cpp`)
+- **Transport**: `cpr` over system libcurl; `nlohmann::json` for serialization.
+- **Archive Handling**: In-memory `zlib` decompression and a bespoke POSIX ustar reader for bulk result archives, bounded by explicit size, entry-count and path-traversal guards.
+- **Credential Hygiene**: API keys are wiped with `OPENSSL_cleanse` on destruction; header values are validated to prevent CRLF injection.
+- **Public Surface**: `enrichTransaction()`, `enrichTransactions()`, `getEnrichmentStatus()` and `downloadEnrichmentCollection()`.
 
 ---
 
@@ -83,7 +81,7 @@ Before writing code, identify which repository is authoritative for your propose
 
 | Type of Proposed Change | Target Repository | Procedure |
 | :--- | :--- | :--- |
-| **New API Endpoints / Routes** | [`xyo-financial/specs`](https://github.com/xyo-financial/specs) | Submit PR to update `openapi.yml`. After merge and tag, the C++ SDK regenerates automatically. |
+| **New API Endpoints / Routes** | [`xyo-financial/specs`](https://github.com/xyo-financial/specs) | Submit PR to update `openapi.yml`. After merge and tag, this SDK's spec check flags the new route for hand implementation. |
 | **Schema / Field / Type Changes** | [`xyo-financial/specs`](https://github.com/xyo-financial/specs) | Propose JSON schema modifications in upstream specification repo. |
 | **HTTP Status Codes / Wire Contracts** | [`xyo-financial/specs`](https://github.com/xyo-financial/specs) | Update API response contracts in `specs/openapi.yml`. |
 | **SDK Ergonomics & Public API** | **This Repository** (`sdk-cpp`) | Propose wrapper improvements in `include/xyo/client.hpp` and `src/client.cpp`. |
@@ -94,52 +92,41 @@ Before writing code, identify which repository is authoritative for your propose
 
 ---
 
-## ⚙️ Code Generation
+## ⚙️ Specification Synchronization
 
-### Automated Cross-Repository Synchronization
-When a new release tag or specification update is pushed to [`xyo-financial/specs`](https://github.com/xyo-financial/specs), an automated GitHub Actions workflow triggers a `repository_dispatch` event (`types: [spec_tagged, spec_updated]`) to this repository. The [`.github/workflows/generate.yml`](.github/workflows/generate.yml) workflow:
+**There is no code generation in this repository.** The client is written and maintained by hand. A specification change therefore does not apply itself; it has to be implemented deliberately, and CI exists to make sure it is not forgotten.
 
-1. Checks out the `xyo-financial/specs` repository at the designated tag or ref (`${{ github.event.client_payload.tag || inputs.spec_tag || 'main' }}`).
-2. Executes `openapi-generator-cli` with the `cpp-restsdk` generator target.
-3. Automatically purges generator scaffolding and metadata noise (`openapi/git_push.sh`, `openapi/.travis.yml`, `openapi/README.md`, `openapi/test/`, `openapi/docs/`, `openapi/api/`, and `specs/`).
-4. Configures and compiles the CMake build and executes `ctest` to ensure the generated code integrates cleanly with the wrapper layer.
-5. Commits the updated `openapi/` directory back to the repository using `stefanzweifel/git-auto-commit-action`.
+### Automated Cross-Repository Verification
+When a new release tag or specification update is pushed to [`xyo-financial/specs`](https://github.com/xyo-financial/specs), an automated GitHub Actions workflow triggers a `repository_dispatch` event (`types: [spec_tagged, spec_updated]`) to this repository. The [`.github/workflows/spec-check.yml`](.github/workflows/spec-check.yml) workflow:
 
-You can also trigger generation manually via GitHub Actions **Workflow Dispatch** with an optional `spec_tag` parameter.
+1. Checks out `xyo-financial/specs` at the designated tag or ref (`${{ github.event.client_payload.tag || inputs.spec_ref || 'main' }}`).
+2. Runs `scripts/check_spec_coverage.py`, which fails if the specification declares a request path the client never issues.
+3. Configures, compiles and runs the CTest suite against the current source.
+4. Opens a `spec-drift` issue if any of the above fails, so a maintainer can implement the change by hand.
 
-### Manual / Local Code Generation
-If you need to regenerate the low-level `openapi/` layer locally:
+You can also trigger verification manually via GitHub Actions **Workflow Dispatch** with an optional `spec_ref` parameter.
+
+### Running the Coverage Check Locally
 
 #### Prerequisites
-- Node.js (v18+) with `npx`
-- Java Runtime Environment (JRE 11+)
-- Sibling clone of `xyo-financial/specs` or path to `openapi.yml`
+- Python 3.8+ with PyYAML (`pip install pyyaml`)
+- A local clone of `xyo-financial/specs`, or any path to an `openapi.yml`
 
 #### Command
 Run from the root of this repository (`sdks/cpp`):
 
 ```bash
-npx -y @openapitools/openapi-generator-cli generate \
-  -i ../specs/openapi.yml \
-  -g cpp-restsdk \
-  -o ./openapi \
-  --additional-properties=packageName=XYOSDK,apiPackage=xyo_api,modelPackage=xyo_model
+python3 scripts/check_spec_coverage.py ../specs/openapi.yml
 ```
 
-*Note: Replace `-i ../specs/openapi.yml` with the portable relative or absolute path to your local `openapi.yml` if located elsewhere.*
+The check covers request paths only. It deliberately does not attempt to verify HTTP methods, schemas or field names against hand-written code, because doing so produces false positives that train maintainers to ignore the result. Schema-level drift is caught by the mock-server suite in `tests/client_test.cpp`.
 
-#### Post-Generation Clean-Up
-After code generation completes, remove unnecessary generator noise and scaffolding files:
-
-```bash
-rm -f openapi/git_push.sh openapi/.travis.yml openapi/README.md
-rm -rf openapi/test openapi/docs openapi/api specs
-```
-
-### Immutable Rule for Generated Code
-- **Never manually edit or format code in `openapi/`.**
-- Code formatters (`clang-format`) and linters (`clang-tidy`) are configured via `.clang-format-ignore` and `.clang-tidy` to strictly ignore `openapi/`.
-- All custom behavior, helper methods, and domain abstractions belong in the wrapper layer (`include/xyo/` and `src/`).
+### Applying a Specification Change
+1. Review the specification diff upstream in `xyo-financial/specs`.
+2. Implement the new or changed operation in `src/client.cpp`, keeping third-party headers behind the PIMPL boundary.
+3. Expose it on `xyo::Client` in `include/xyo/client.hpp` using standard C++17 types only.
+4. Add mock-server coverage in `tests/client_test.cpp`.
+5. Confirm `python3 scripts/check_spec_coverage.py ../specs/openapi.yml` passes.
 
 ---
 
@@ -149,15 +136,18 @@ rm -rf openapi/test openapi/docs openapi/api specs
 - **C++ Compiler**: C++17 compliant compiler (GCC 9+, Clang 10+, Apple Clang 12+, MSVC 2019+)
 - **Build System**: CMake 3.16+
 - **Core Dependencies**:
-  - `cpprestsdk` (Casablanca, 2.10+)
-  - `Boost` (1.70+ with system/thread/chrono components)
+  - `cpr` (1.10+) and system libcurl
+  - `nlohmann_json` (3.11+)
   - `OpenSSL` (1.1+ or 3.0+)
+  - `ZLIB` (1.2.8+)
+
+`cpr` and `nlohmann_json` are resolved by `find_package` first and fetched via `FetchContent` when absent, so only libcurl, OpenSSL and zlib need to be present on the system.
 
 ### Package Installation
 
 #### macOS (Homebrew)
 ```bash
-brew install cmake cpprestsdk boost openssl
+brew install cmake openssl zlib
 ```
 
 #### Ubuntu / Debian (`apt`)
@@ -166,9 +156,9 @@ sudo apt-get update
 sudo apt-get install -y \
   build-essential \
   cmake \
-  libcpprest-dev \
-  libboost-all-dev \
-  libssl-dev
+  libcurl4-openssl-dev \
+  libssl-dev \
+  zlib1g-dev
 ```
 
 #### Fedora / RHEL (`dnf`)
@@ -176,9 +166,9 @@ sudo apt-get install -y \
 sudo dnf install -y \
   gcc-c++ \
   cmake \
-  cpprest-devel \
-  boost-devel \
-  openssl-devel
+  libcurl-devel \
+  openssl-devel \
+  zlib-devel
 ```
 
 ---
@@ -207,7 +197,7 @@ cmake --build --preset debug
 
 ### 2. CTest & Mock HTTP Test Suite
 
-The test suite in `tests/client_test.cpp` features an embedded loopback HTTP server (`MockHttpServer` using `cpprest::http_listener`) that validates:
+The test suite in `tests/client_test.cpp` features an embedded loopback HTTP server built directly on BSD/Winsock sockets, with no external test framework, that validates:
 - Real HTTP wire transport and header propagation (e.g. `Authorization: Bearer <token>`, `Content-Type: application/json`).
 - Synchronous single transaction enrichment (`enrichTransaction`).
 - Asynchronous bulk batch processing (`enrichTransactions`).
@@ -229,7 +219,7 @@ Or execute the test binary directly:
 ./build/xyo_sdk_tests
 ```
 
-### 3. Code Formatting & Style (Excluding Generated Code)
+### 3. Code Formatting & Style
 
 This project strictly adheres to modern C++ Core Guidelines and LLVM/Google C++ formatting standards:
 - 2 spaces indentation, no tabs.
@@ -238,7 +228,7 @@ This project strictly adheres to modern C++ Core Guidelines and LLVM/Google C++ 
 - Const-correctness on all inspect-only methods and parameters.
 - File-scoped helper functions enclosed in anonymous namespaces.
 
-Format hand-crafted C++ source and header files using `clang-format` (the generated `openapi/` directory is ignored by `.clang-format-ignore`):
+Format C++ source and header files using `clang-format` (build directories are excluded via `.clang-format-ignore`):
 
 ```bash
 clang-format -i \
@@ -297,7 +287,7 @@ conan create . --build=missing
    - Write clear, imperative commit messages adhering to [Conventional Commits](https://www.conventionalcommits.org/) (e.g. `feat: add client connection timeout configuration`).
    - Keep commits focused and atomic.
 3. **PR Checklist**:
-   - [ ] No manual edits or formatting applied to `openapi/` (use generator if spec changed).
+   - [ ] `scripts/check_spec_coverage.py` passes against the current `openapi.yml`.
    - [ ] Public API in `include/xyo/client.hpp` maintains PIMPL encapsulation (no leaking headers).
    - [ ] All CMake builds compile with zero warnings under `-Wall -Wextra -Wpedantic`.
    - [ ] CTest suite passes 100% cleanly.

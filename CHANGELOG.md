@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Deleted the unused `openapi/` generated `cpp-restsdk` client and its `openapitools.json` generator config. The transport moved to `cpr` in 2.0.0, but the generated tree was left behind and kept being regenerated despite never being referenced by any build, package or test.
+
 ### Added
+- `scripts/check_spec_coverage.py`, which fails when the upstream specification declares a request path the hand-written client does not issue.
+
+### Fixed
+- Corrected the documented behaviour of `ClientConfig::connect_timeout_ms` in both the public header and the README. It was described as reserved and unused, when in fact it has been applied as the connection timeout on every request.
+- Corrected the Conan recipe version, which was still declared as `2.0.0` while CMake, the vcpkg port and the documentation were all at `2.1.0`. A local `conan create .` produced a mislabelled package as a result.
+
+### Changed
+- Extended the release pipeline tag check to verify `conanfile.py` and `packaging/vcpkg/vcpkg.json` alongside `CMakeLists.txt`, so no packaging manifest can silently fall behind a release tag again.
+- Replaced the `generate.yml` regeneration workflow with `spec-check.yml`. It consumes the same `spec_tagged`/`spec_updated` dispatch, verifies path coverage, builds and tests the SDK, and opens a `spec-drift` issue instead of raising a pull request against generated code.
+- Corrected documentation that described the SDK as a wrapper over a generated `cpprestsdk` layer, including the `client.hpp` header comment, the CONTRIBUTING architecture and toolchain sections, and the `clang-format` include ordering.
 - Enterprise banking resilience: added environment variable fallback (`XYO_API_BASE_URL`) support across `ClientConfig` constructors for seamless enterprise container and test harness configuration.
 - Multi-MIME stream negotiation: extended bulk enrichment collection archive download `Accept` header to negotiate `application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8`.
 - WAF and reverse-proxy diagnostics: added early `Content-Type` header inspection on archive downloads to identify intermediate proxy/WAF challenge pages.
