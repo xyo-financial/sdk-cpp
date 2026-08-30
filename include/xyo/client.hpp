@@ -4,8 +4,9 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// XYO C++ SDK – idiomatic wrapper over the OpenAPI-generated cpp-restsdk client.
-// All HTTP / serialisation logic is delegated to the generated layer in openapi/.
+// XYO C++ SDK: hand-written C++17 client for the XYO Financial enrichment API.
+// HTTP and serialisation are handled in src/client.cpp via cpr (libcurl) and
+// nlohmann::json; those headers stay behind the PIMPL and never reach consumers.
 // ---------------------------------------------------------------------------
 
 #include <cstddef>

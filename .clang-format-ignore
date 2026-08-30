@@ -1,5 +1,3 @@
-openapi/**
-openapi/*
 build/**
 build*/**
 cmake-build*/**
