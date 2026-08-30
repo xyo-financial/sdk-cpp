@@ -94,6 +94,11 @@ Before writing code, identify which repository is authoritative for your propose
 
 ## ⚙️ Specification Synchronization
 
+> [!IMPORTANT]
+> **This SDK is the one exception to the fleet convention, and that exception is under review.**
+> The other six SDKs generate a client from `openapi.yml` and wrap it by hand. This one is hand-written throughout, with no generated layer. Whether it converges is being decided in [#29](https://github.com/xyo-financial/sdk-cpp/issues/29). Until that is settled, do not change how this SDK synchronises with the specification, and do not treat it as a precedent for any other SDK.
+
+
 **There is no code generation in this repository.** The client is written and maintained by hand. A specification change therefore does not apply itself; it has to be implemented deliberately, and CI exists to make sure it is not forgotten.
 
 ### Automated Cross-Repository Verification
