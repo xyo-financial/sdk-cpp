@@ -13,7 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `scripts/check_spec_coverage.py`, which fails when the upstream specification declares a request path the hand-written client does not issue.
 
+### Fixed
+- Corrected the Conan recipe version, which was still declared as `2.0.0` while CMake, the vcpkg port and the documentation were all at `2.1.0`. A local `conan create .` produced a mislabelled package as a result.
+
 ### Changed
+- Extended the release pipeline tag check to verify `conanfile.py` and `packaging/vcpkg/vcpkg.json` alongside `CMakeLists.txt`, so no packaging manifest can silently fall behind a release tag again.
 - Replaced the `generate.yml` regeneration workflow with `spec-check.yml`. It consumes the same `spec_tagged`/`spec_updated` dispatch, verifies path coverage, builds and tests the SDK, and opens a `spec-drift` issue instead of raising a pull request against generated code.
 - Corrected documentation that described the SDK as a wrapper over a generated `cpprestsdk` layer, including the `client.hpp` header comment, the CONTRIBUTING architecture and toolchain sections, and the `clang-format` include ordering.
 - Enterprise banking resilience: added environment variable fallback (`XYO_API_BASE_URL`) support across `ClientConfig` constructors for seamless enterprise container and test harness configuration.

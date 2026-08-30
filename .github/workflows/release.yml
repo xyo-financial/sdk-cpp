@@ -26,22 +26,35 @@ jobs:
             exit 1;
           }
 
-      - name: Extract CMake Version
-        id: cmake_version
+      # Every packaging manifest carries the version independently, so each one
+      # is checked against the tag. Checking only CMakeLists.txt let conanfile.py
+      # sit at a stale version through an entire release cycle unnoticed.
+      - name: Verify All Manifests Match Git Tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          VERSION=$(grep -oE "project\((xyo_sdk_cpp|XYOSDK) VERSION [0-9]+\.[0-9]+\.[0-9]+" CMakeLists.txt | grep -oE "[0-9]+\.[0-9]+\.[0-9]+")
-          echo "CMake version is $VERSION"
-          echo "val=$VERSION" >> $GITHUB_OUTPUT
+          TAG_VER=${TAG_NAME#v} # Strip leading 'v'
+          echo "Git tag version: $TAG_VER"
 
-      - name: Compare CMake Version to Git Tag
-        run: |
-          TAG_VER=${{ github.ref_name }}
-          TAG_VER=${TAG_VER#v} # Strip leading 'v'
-          CMAKE_VER=${{ steps.cmake_version.outputs.val }}
-          if [ "$TAG_VER" != "$CMAKE_VER" ]; then
-            echo "Error: Git tag ($TAG_VER) does not match CMakeLists.txt version ($CMAKE_VER)"
-            exit 1
-          fi
+          CMAKE_VER=$(grep -oE 'project\(XYOSDK VERSION [0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          CONAN_VER=$(grep -oE '^\s*version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"' conanfile.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          VCPKG_VER=$(grep -oE '"version"\s*:\s*"[0-9]+\.[0-9]+\.[0-9]+"' packaging/vcpkg/vcpkg.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+
+          STATUS=0
+          for entry in "CMakeLists.txt:$CMAKE_VER" "conanfile.py:$CONAN_VER" "packaging/vcpkg/vcpkg.json:$VCPKG_VER"; do
+            FILE=${entry%%:*}
+            VER=${entry#*:}
+            if [ -z "$VER" ]; then
+              echo "Error: could not parse a version from $FILE"
+              STATUS=1
+            elif [ "$VER" != "$TAG_VER" ]; then
+              echo "Error: $FILE is at $VER but the tag is $TAG_VER"
+              STATUS=1
+            else
+              echo "OK: $FILE is at $VER"
+            fi
+          done
+          exit $STATUS
 
   run-tests:
     name: Run Tests
