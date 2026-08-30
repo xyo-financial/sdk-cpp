@@ -1,1 +1,5 @@
 docs/ export-ignore
+
+# The generated OpenAPI client is a development reference only. It is never
+# built, linked or shipped, so it has no place in a release source archive.
+openapi/ export-ignore

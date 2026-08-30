@@ -1,0 +1,167 @@
+name: Regenerate OpenAPI Reference Client
+
+# The generated client is a DEVELOPMENT REFERENCE ONLY. It is never built by the
+# SDK, never linked, and never shipped.
+#
+# It cannot be a real dependency: the cpp-restsdk generator emits code against
+# Microsoft's cpprestsdk, which was archived on 1 June 2026 and removed from
+# vcpkg the following day (microsoft/vcpkg#52130). Nothing that links it can be
+# installed on any vcpkg triplet.
+#
+# It is still worth generating. It gives a machine-produced, reviewable
+# statement of the contract in C++ terms, so a specification change arrives as a
+# concrete diff rather than as prose someone has to notice. The hand-written
+# client in src/ is what actually ships, and it is updated by hand against that
+# diff.
+#
+# The isolation is structural, not a matter of care:
+#   - CMakeLists.txt never references openapi/, so the SDK build cannot reach it
+#   - conanfile.py exports_sources omits it, so it is absent from Conan packages
+#   - install() covers include/ only, so it is absent from installed packages
+#   - .gitattributes marks it export-ignore, so it is absent from release archives
+# The job below asserts each of those rather than trusting them.
+
+on:
+  repository_dispatch:
+    # specs only ever emits spec_tagged; see xyo-financial/specs#12
+    types: [spec_tagged]
+  workflow_dispatch:
+    inputs:
+      spec_ref:
+        description: 'Tag or branch in xyo-financial/specs to generate from'
+        required: false
+        default: 'main'
+
+jobs:
+  regenerate:
+    name: Regenerate Reference & Verify SDK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    env:
+      SPEC_REF: ${{ github.event.client_payload.tag || inputs.spec_ref || 'main' }}
+
+    steps:
+      - name: Checkout SDK repository
+        uses: actions/checkout@v4
+
+      - name: Checkout OpenAPI specification
+        uses: actions/checkout@v4
+        with:
+          repository: xyo-financial/specs
+          ref: ${{ env.SPEC_REF }}
+          path: specs
+
+      - name: Set up Node.js (for openapi-generator-cli)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate the reference client
+        run: |
+          npx -y @openapitools/openapi-generator-cli@7.24.0 generate \
+            -i specs/openapi.yml \
+            -g cpp-restsdk \
+            -o openapi \
+            --additional-properties=packageName=XYOSDK,apiPackage=xyo_api,modelPackage=xyo_model
+
+          rm -f openapi/git_push.sh openapi/.travis.yml openapi/README.md
+          rm -rf openapi/test openapi/docs openapi/api
+
+      - name: Compile the reference client in isolation
+        run: |
+          # cpprestsdk is gone from vcpkg but Ubuntu still packages it, so the
+          # reference can be compiled here even though no consumer could link it.
+          # This is what stops it rotting into code that no longer builds at all.
+          #
+          # Deliberately a separate CMake invocation against openapi/ alone: the
+          # SDK build is never involved, so this cannot become a dependency by
+          # accident.
+          sudo apt-get update -qq
+          sudo apt-get install -y libcpprest-dev libboost-all-dev libssl-dev
+          cmake -S openapi -B /tmp/build-openapi-reference
+          cmake --build /tmp/build-openapi-reference --parallel
+          rm -rf /tmp/build-openapi-reference
+
+      - name: Assert the reference cannot reach consumers
+        run: |
+          fail=0
+          if grep -q 'add_subdirectory(openapi' CMakeLists.txt; then
+            echo "::error::CMakeLists.txt builds openapi/; the reference must never enter the SDK build"; fail=1
+          fi
+          if grep -qE '^\s*"openapi' conanfile.py; then
+            echo "::error::conanfile.py exports openapi/; it must not ship in Conan packages"; fail=1
+          fi
+          if grep -q 'install(DIRECTORY openapi' CMakeLists.txt; then
+            echo "::error::CMakeLists.txt installs openapi/; it must not ship in installed packages"; fail=1
+          fi
+          if ! grep -q '^openapi/ export-ignore' .gitattributes; then
+            echo "::error::.gitattributes no longer excludes openapi/ from release archives"; fail=1
+          fi
+          exit $fail
+
+      - name: Verify the shipped SDK still covers the specification
+        run: |
+          pip install pyyaml
+          python3 scripts/check_spec_coverage.py specs/openapi.yml
+
+      - name: Build and test the shipped SDK
+        run: |
+          sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev
+          rm -rf specs
+          cmake -B build -S . -DCMAKE_BUILD_TYPE=Release -DXYO_BUILD_TESTS=ON
+          cmake --build build --parallel
+          ctest --test-dir build --output-on-failure
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.SDK_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: "chore: regenerate OpenAPI reference client from spec ${{ env.SPEC_REF }}"
+          title: "Automated SDK Update"
+          body: |
+            Regenerates the OpenAPI reference client from specification `${{ env.SPEC_REF }}`.
+
+            The reference is not built, linked or shipped by this SDK. Read this diff as a
+            statement of what changed in the contract, then apply anything material to the
+            hand-written client in `src/client.cpp` and `include/xyo/client.hpp` yourself.
+
+            The shipped SDK was built and tested on this run, and its specification path
+            coverage was verified.
+          branch: "chore/auto-update-sdk"
+          delete-branch: true
+
+      - name: Open drift issue
+        if: failure() && github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create spec-drift \
+            --description "SDK has fallen behind the API specification" \
+            --color D93F0B 2>/dev/null || true
+
+          gh issue create \
+            --title "SDK is out of step with specification $SPEC_REF" \
+            --label "spec-drift" \
+            --body "$(cat <<EOF
+          The API specification was updated to \`$SPEC_REF\` and this run failed.
+
+          The client here is hand-written, so a specification change has to be applied by hand:
+
+          1. Review the diff in [xyo-financial/specs](https://github.com/xyo-financial/specs) at \`$SPEC_REF\`.
+          2. Implement any new or changed operation in \`src/client.cpp\` and expose it in \`include/xyo/client.hpp\`.
+          3. Add coverage in \`tests/client_test.cpp\`.
+          4. Re-run this workflow to confirm.
+
+          Failing run: $RUN_URL
+          EOF
+          )"

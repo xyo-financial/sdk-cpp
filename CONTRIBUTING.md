@@ -95,8 +95,33 @@ Before writing code, identify which repository is authoritative for your propose
 ## ⚙️ Specification Synchronization
 
 > [!IMPORTANT]
-> **This SDK is the one exception to the fleet convention, and that exception is under review.**
-> The other six SDKs generate a client from `openapi.yml` and wrap it by hand. This one is hand-written throughout, with no generated layer. Whether it converges is being decided in [#29](https://github.com/xyo-financial/sdk-cpp/issues/29). Until that is settled, do not change how this SDK synchronises with the specification, and do not treat it as a precedent for any other SDK.
+> **`openapi/` is a development reference. It is never built, linked or shipped.**
+> The code that ships is `src/client.cpp` and `include/xyo/client.hpp`, written and maintained by hand.
+
+### Why the reference is not the product
+
+The `cpp-restsdk` generator emits code against Microsoft's cpprestsdk. That library was archived on 1 June 2026 and removed from vcpkg the following day ([microsoft/vcpkg#52130](https://github.com/microsoft/vcpkg/pull/52130)), so there is no longer a port to install on any triplet. Anything linking it would be uninstallable everywhere, not merely heavy on Android. This is why C++ does not follow the fleet convention of generating and wrapping; see [#29](https://github.com/xyo-financial/sdk-cpp/issues/29).
+
+Generating it anyway is still worth the effort. It turns a specification change into a concrete, reviewable diff in C++ terms, rather than prose someone has to notice and interpret.
+
+### How to use it
+
+When a specification tag lands, `.github/workflows/generate.yml` regenerates `openapi/` and opens a pull request. **Read that diff as a description of what changed in the contract**, then implement anything material by hand in `src/client.cpp`, expose it in `include/xyo/client.hpp`, and cover it in `tests/client_test.cpp`. Merging the pull request updates the reference only; it changes nothing that ships.
+
+### The isolation is structural
+
+Four properties keep the reference out of everything that reaches a consumer, and the workflow asserts each on every run rather than trusting them:
+
+| Boundary | Mechanism |
+| :--- | :--- |
+| SDK build | `CMakeLists.txt` never references `openapi/`; the reference is compiled by a separate CMake invocation in CI only |
+| Conan package | `exports_sources` in `conanfile.py` omits it |
+| Installed package | `install()` covers `include/` only |
+| Release archive | `.gitattributes` marks it `export-ignore` |
+
+CI compiles the reference in isolation using Ubuntu's `libcpprest-dev`, which still packages cpprestsdk even though vcpkg does not. That is purely so the reference cannot rot into code that no longer builds. It never becomes a dependency of the SDK.
+
+**Never edit `openapi/` by hand**, and never wire it into the build. If it is wrong, fix the specification upstream or the generator invocation in the workflow.
 
 
 **There is no code generation in this repository.** The client is written and maintained by hand. A specification change therefore does not apply itself; it has to be implemented deliberately, and CI exists to make sure it is not forgotten.
