@@ -67,7 +67,10 @@ jobs:
 
       - name: Generate the reference client
         run: |
-          npx -y @openapitools/openapi-generator-cli@7.24.0 generate \
+          # Two distinct versions, easily confused: the npm package pinned here is the
+          # wrapper (2.x), while the generator it downloads is pinned separately at 7.24.0
+          # in openapitools.json. Both are pinned so output is reproducible.
+          npx -y @openapitools/openapi-generator-cli@2.41.0 generate \
             -i specs/openapi.yml \
             -g cpp-restsdk \
             -o openapi \
