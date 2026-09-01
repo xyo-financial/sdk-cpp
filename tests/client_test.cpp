@@ -1308,6 +1308,67 @@ int main() {
       TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
       TEST_ASSERT(e.rate_limit_info()->limit == 100);
     }
+
+    // 10r. Refuse HTTP redirect on archive download (C1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{302, "text/plain", "Found", {{"Location", "http://169.254.169.254/latest/meta-data"}}};
+    });
+    expects_error(xyo::ErrorCategory::http, "Unexpected HTTP status from downloadEnrichmentCollection: HTTP 302", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/redirect.tar.gz");
+    });
+
+    // 10s. Valid tar filename with double dots (e.g. batch..2.json) passes (C7)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string json_data = R"({"merchant":"DotMerchant","description":"Desc","logo":"","categories":[]})";
+      std::string tar = create_tar_archive({{"batch..2.json", json_data}});
+      auto gz = gzip_compress(tar);
+      return gzip_response(200, gz);
+    });
+    {
+      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/batch..2.tar.gz");
+      TEST_ASSERT(results.size() == 1);
+      TEST_ASSERT(results[0].merchant == "DotMerchant");
+    }
+
+    // 10t. Missing required id or link in enrichTransactions throws ErrorCategory::parsing (S1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(200, R"({"status":"CREATED"})");
+    });
+    expects_error(xyo::ErrorCategory::parsing, "missing required 'id' or 'link' field", [&] {
+      (void)client.enrichTransactions({{"Test", "US"}});
+    });
+
+    // 10u. Arabic UTF-8 text length > 128 characters throws validation error (S3)
+    std::string arabic_130_chars;
+    for (int i = 0; i < 130; ++i) {
+      arabic_130_chars += "\xd8\xb4";
+    }
+    expects_error(xyo::ErrorCategory::validation, "exceeds maximum length of 128 characters", [&] {
+      (void)client.enrichTransaction({arabic_130_chars, "ae"});
+    });
+
+    // 10v. Country code uppercase normalization (S13)
+    server.clear_requests();
+    server.set_handler([](const MockHttpServer::RecordedRequest& req) {
+      auto j = nlohmann::json::parse(req.body);
+      TEST_ASSERT(j["countryCode"] == "GB");
+      return json_response(200, R"({"merchant":"Tesco","description":"Groceries","categories":[]})");
+    });
+    {
+      auto res = client.enrichTransaction({"Tesco London", "gb"});
+      TEST_ASSERT(res.merchant == "Tesco");
+    }
+
+    // 10w. Per-call timeout override on EnrichmentRequestOptions (S14)
+    xyo::EnrichmentRequestOptions timeout_options;
+    timeout_options.request_timeout_ms = 4000;
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(200, R"({"merchant":"QuickMerchant","description":"Desc","categories":[]})");
+    });
+    {
+      auto res = client.enrichTransaction({"Quick Tx", "US"}, timeout_options);
+      TEST_ASSERT(res.merchant == "QuickMerchant");
+    }
   }
 
   server.stop();

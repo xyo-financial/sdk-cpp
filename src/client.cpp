@@ -87,6 +87,10 @@ inline void validate_and_normalize_request(EnrichmentRequest& req, const char* o
     throw Error(ErrorCategory::validation,
                 std::string(op_name) + ": request content exceeds maximum length of 128 characters");
   }
+  if (req.country_code.empty()) {
+    throw Error(ErrorCategory::validation,
+                std::string(op_name) + ": request country_code must not be empty");
+  }
   if (req.country_code.size() != 2 ||
       !((req.country_code[0] >= 'a' && req.country_code[0] <= 'z') || (req.country_code[0] >= 'A' && req.country_code[0] <= 'Z')) ||
       !((req.country_code[1] >= 'a' && req.country_code[1] <= 'z') || (req.country_code[1] >= 'A' && req.country_code[1] <= 'Z'))) {
