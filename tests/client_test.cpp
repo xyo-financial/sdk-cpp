@@ -793,6 +793,21 @@ int main() {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
       TEST_ASSERT(e.http_status_code() == 500);
     }
+
+    // RFC 7807 Problem Details
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(422, R"({"type": "https://example.com/probs/out-of-credit", "title": "You do not have enough credit.", "detail": "Your current balance is 30, but that costs 50."})");
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
+      TEST_ASSERT(e.http_status_code() == 422);
+      std::string msg(e.what());
+      TEST_ASSERT(msg.find("You do not have enough credit.") != std::string::npos);
+      TEST_ASSERT(msg.find("Your current balance is 30, but that costs 50.") != std::string::npos);
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -176,27 +176,41 @@ inline cpr::Header build_headers(const std::string& api_key,
 }
 
 inline void check_and_throw_http_error(const cpr::Response& res, const char* op_name) {
+  std::string error_msg = "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code);
   std::string body_text = res.text;
-  if (body_text.size() > 1000) {
-    body_text = body_text.substr(0, 1000) + "... (truncated)";
+  
+  if (!body_text.empty()) {
+    try {
+      auto j = nlohmann::json::parse(body_text);
+      bool has_problem = false;
+      if (j.contains("title") && j["title"].is_string()) {
+        error_msg += ": " + j["title"].get<std::string>();
+        has_problem = true;
+      }
+      if (j.contains("detail") && j["detail"].is_string()) {
+        error_msg += " - " + j["detail"].get<std::string>();
+        has_problem = true;
+      }
+      if (!has_problem) {
+        if (body_text.size() > 1000) body_text = body_text.substr(0, 1000) + "... (truncated)";
+        error_msg += ": " + body_text;
+      }
+    } catch (...) {
+      if (body_text.size() > 1000) body_text = body_text.substr(0, 1000) + "... (truncated)";
+      error_msg += ": " + body_text;
+    }
   }
+
   if (res.status_code == 429) {
     auto rli = parse_rate_limit_info(res.header);
-    throw Error(ErrorCategory::rate_limit,
-                "HTTP 429 Rate Limit Exceeded from " + std::string(op_name) + ": " + body_text,
-                res.status_code, 0, rli);
+    throw Error(ErrorCategory::rate_limit, error_msg, res.status_code, 0, rli);
   }
   if (res.status_code >= 400) {
     auto rli = parse_rate_limit_info(res.header);
-    throw Error(ErrorCategory::http,
-                "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + ": " + body_text,
-                res.status_code, 0, rli);
+    throw Error(ErrorCategory::http, error_msg, res.status_code, 0, rli);
   }
   if (res.status_code != 0 && res.status_code != 200) {
-    throw Error(ErrorCategory::http,
-                "Unexpected HTTP status from " + std::string(op_name) + ": HTTP " +
-                    std::to_string(res.status_code) + " (expected 200)",
-                res.status_code);
+    throw Error(ErrorCategory::http, "Unexpected HTTP status from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code) + " (expected 200)", res.status_code);
   }
 }
 
@@ -776,10 +790,17 @@ Client::downloadEnrichmentCollection(
   }
 
   std::string auth_key = (is_same_host && is_same_port) ? impl_->config.api_key : "";
+  EnrichmentRequestOptions safe_options = options;
+  if (!(is_same_host && is_same_port)) {
+    safe_options.x_api_user = std::nullopt;
+    safe_options.x_correlation_id = std::nullopt;
+    safe_options.traceparent = std::nullopt;
+  }
+
   cpr::Header headers = build_headers(
       auth_key, "",
       "application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8",
-      options);
+      safe_options);
 
   cpr::Response response = cpr::Get(
       cpr::Url{full_url},
