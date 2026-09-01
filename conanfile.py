@@ -7,6 +7,7 @@ import os
 
 class XyoSdkCppConan(ConanFile):
     name = "xyo-sdk"
+    version = "2.1.0"
     license = "Apache-2.0"
     author = "Syniol Limited"
     url = "https://github.com/xyo-financial/sdk-cpp"
@@ -28,10 +29,6 @@ class XyoSdkCppConan(ConanFile):
         "cmake/*",
         "tests/*",
     )
-
-    def set_version(self):
-        if not self.version:
-            self.version = "2.1.0"
 
     def config_options(self):
         if self.settings.os == "Windows":
