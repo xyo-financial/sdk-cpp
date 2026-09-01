@@ -800,7 +800,10 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     for (std::size_t i = 0; i < TAR_BLOCK_SIZE && all_zero; ++i) {
       if (hdr[i] != '\0') all_zero = false;
     }
-    if (all_zero) break;
+    if (all_zero) {
+      offset += TAR_BLOCK_SIZE;
+      continue;
+    }
 
     unsigned int expected_chk = 0;
     for (std::size_t i = 0; i < TAR_BLOCK_SIZE; ++i) {
