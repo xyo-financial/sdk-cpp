@@ -1281,9 +1281,10 @@ int main() {
       std::string json2 = R"({"merchant":"Member2","description":"Desc2","categories":[]})";
       std::string tar1 = create_tar_archive({{"1.json", json1}});
       std::string tar2 = create_tar_archive({{"2.json", json2}});
-      std::string gz1 = gzip_compress(tar1);
-      std::string gz2 = gzip_compress(tar2);
-      std::string multi_member_gz = gz1 + gz2;
+      auto gz1 = gzip_compress(tar1);
+      auto gz2 = gzip_compress(tar2);
+      std::vector<uint8_t> multi_member_gz = gz1;
+      multi_member_gz.insert(multi_member_gz.end(), gz2.begin(), gz2.end());
       return gzip_response(200, multi_member_gz);
     });
     {
