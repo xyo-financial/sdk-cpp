@@ -838,10 +838,12 @@ int main() {
       TEST_ASSERT(false);
     } catch (const xyo::Error& e) {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
-      TEST_ASSERT(e.http_status_code() == 422);
       std::string msg(e.what());
       TEST_ASSERT(msg.find("You do not have enough credit.") != std::string::npos);
-      TEST_ASSERT(msg.find("Your current balance is 30, but that costs 50.") != std::string::npos);
+      TEST_ASSERT(msg.find("https://example.com/probs/out-of-credit") != std::string::npos);
+      TEST_ASSERT(e.problem_detail() == "Your current balance is 30, but that costs 50.");
+      TEST_ASSERT(e.problem_title() == "You do not have enough credit.");
+      TEST_ASSERT(e.problem_type() == "https://example.com/probs/out-of-credit");
     }
   }
 
