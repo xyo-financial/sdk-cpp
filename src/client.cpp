@@ -5,6 +5,10 @@
 // XYO C++ SDK – Modern C++17 client powered by CPR (libcurl) and nlohmann::json.
 // ---------------------------------------------------------------------------
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "xyo/client.hpp"
 
 #include <cpr/cpr.h>
@@ -55,10 +59,11 @@ inline std::string to_ascii_lower(std::string_view sv) {
   return res;
 }
 
-inline std::string sanitize_for_message(std::string_view s, std::size_t max = 200) {
+inline std::string sanitize_for_message(std::string_view s, std::size_t max_len = 200) {
   std::string out;
-  out.reserve(std::min(s.size(), max));
-  for (char c : s.substr(0, std::min(s.size(), max))) {
+  std::size_t limit = (std::min)(s.size(), max_len);
+  out.reserve(limit);
+  for (char c : s.substr(0, limit)) {
     unsigned char u = static_cast<unsigned char>(c);
     out.push_back((u < 32 || u == 127) ? ' ' : c);
   }
