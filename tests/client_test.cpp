@@ -1371,6 +1371,48 @@ int main() {
       auto res = client.enrichTransaction({"Quick Tx", "US"}, timeout_options);
       TEST_ASSERT(res.merchant == "QuickMerchant");
     }
+
+    // 10x. HTTP-date parsing under non-English locale (N2)
+    const char* prev_locale = std::setlocale(LC_ALL, nullptr);
+    std::string saved_loc = prev_locale ? prev_locale : "C";
+    std::setlocale(LC_ALL, "de_DE.UTF-8");
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{429, "application/json", R"({"title":"Rate Limited"})", {{"retry-after", "Wed, 21 Oct 2099 07:28:00 GMT"}, {"ratelimit-limit", "50"}}};
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
+      TEST_ASSERT(e.rate_limit_info().has_value());
+      TEST_ASSERT(e.rate_limit_info()->retry_after.has_value());
+      TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
+    }
+    std::setlocale(LC_ALL, saved_loc.c_str());
+
+    // 10y. Problem details log injection sanitisation in what() (N3)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(400, R"({"type":"https://example.com/err\nforged-type","title":"Bad Request\nInjected Log Entry","detail":"sensitive info"})");
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      std::string msg(e.what());
+      TEST_ASSERT(msg.find('\n') == std::string::npos);
+      TEST_ASSERT(msg.find("Bad Request Injected Log Entry") != std::string::npos);
+      TEST_ASSERT(e.problem_title() == "Bad Request\nInjected Log Entry");
+    }
+
+    // 10z. Allowlist label boundary check (N7)
+    {
+      xyo::ClientConfig cfg("test-key", "https://api.xyo.financial");
+      cfg.allowed_download_domains = {"amazonaws.com"};
+      xyo::Client c(std::move(cfg));
+      expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
+        (void)c.downloadEnrichmentCollection("https://notamazonaws.com/archive.tar.gz");
+      });
+    }
   }
 
   server.stop();

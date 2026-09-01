@@ -21,11 +21,13 @@
 #include <initializer_list>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace xyo {
@@ -35,6 +37,8 @@ namespace xyo {
 // ---------------------------------------------------------------------------
 
 namespace {
+
+constexpr std::size_t MAX_JSON_RESPONSE_SIZE = 10 * 1024 * 1024; // 10 MiB limit for JSON responses
 
 constexpr char ascii_lower(char c) noexcept {
   return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
@@ -49,6 +53,27 @@ inline std::string to_ascii_lower(std::string_view sv) {
   res.reserve(sv.size());
   for (char c : sv) res.push_back(ascii_lower(c));
   return res;
+}
+
+inline std::string sanitize_for_message(std::string_view s, std::size_t max = 200) {
+  std::string out;
+  out.reserve(std::min(s.size(), max));
+  for (char c : s.substr(0, std::min(s.size(), max))) {
+    unsigned char u = static_cast<unsigned char>(c);
+    out.push_back((u < 32 || u == 127) ? ' ' : c);
+  }
+  return out;
+}
+
+inline bool host_matches(std::string_view host, std::string_view rule) {
+  if (rule.empty()) return false;
+  if (rule.front() == '.') {
+    rule.remove_prefix(1);
+  }
+  if (host == rule) return true; // exact match
+  if (host.size() <= rule.size() + 1) return false;
+  if (host.compare(host.size() - rule.size(), rule.size(), rule) != 0) return false;
+  return host[host.size() - rule.size() - 1] == '.'; // label boundary
 }
 
 void secure_erase(std::string& str) noexcept {
@@ -78,7 +103,7 @@ inline std::size_t utf8_length(std::string_view s) {
   return len;
 }
 
-inline void validate_and_normalize_request(EnrichmentRequest& req, const char* op_name) {
+inline void validate_request(const EnrichmentRequest& req, const char* op_name) {
   if (req.content.empty()) {
     throw Error(ErrorCategory::validation,
                 std::string(op_name) + ": request content must not be empty");
@@ -97,8 +122,6 @@ inline void validate_and_normalize_request(EnrichmentRequest& req, const char* o
     throw Error(ErrorCategory::validation,
                 std::string(op_name) + ": request country_code must be a 2-letter ISO 3166-1 alpha-2 code");
   }
-  req.country_code[0] = ascii_upper(req.country_code[0]);
-  req.country_code[1] = ascii_upper(req.country_code[1]);
 }
 
 inline void validate_batch_size(std::size_t size, std::size_t max_collection_size) {
@@ -158,8 +181,10 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
       found = true;
     } catch (const std::invalid_argument&) {
       // Parse RFC 7231 / RFC 9110 HTTP-date string (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
+      // Imbue classic "C" locale so host process locale does not break English date parsing (N2)
       std::tm tm_buf{};
       std::istringstream ss(*val);
+      ss.imbue(std::locale::classic());
       ss >> std::get_time(&tm_buf, "%a, %d %b %Y %H:%M:%S GMT");
       if (!ss.fail()) {
 #ifdef _WIN32
@@ -280,9 +305,9 @@ inline void check_and_throw_http_error(const cpr::Response& res, const char* op_
 
   std::string error_msg = "HTTP error from " + std::string(op_name) + ": HTTP " + std::to_string(res.status_code);
   if (!prob_title.empty()) {
-    error_msg += " " + prob_title;
+    error_msg += " " + sanitize_for_message(prob_title);
     if (!prob_type.empty()) {
-      error_msg += " (" + prob_type + ")";
+      error_msg += " (" + sanitize_for_message(prob_type) + ")";
     }
   }
 
@@ -510,8 +535,8 @@ struct Client::Impl {
   explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {}
 
   cpr::Session& session() const {
-    thread_local cpr::Session s;
-    return s;
+    thread_local std::unordered_map<const Impl*, cpr::Session> sessions;
+    return sessions[this];
   }
 };
 
@@ -545,12 +570,12 @@ Client::~Client() noexcept = default;
 EnrichmentResponse Client::enrichTransaction(
     const EnrichmentRequest& request,
     const EnrichmentRequestOptions& options) const {
-  EnrichmentRequest req_copy = request;
-  validate_and_normalize_request(req_copy, "enrichTransaction");
+  validate_request(request, "enrichTransaction");
 
   nlohmann::json body = {
-      {"content", req_copy.content},
-      {"countryCode", req_copy.country_code}
+      {"content", request.content},
+      {"countryCode", std::string{ascii_upper(request.country_code[0]),
+                                  ascii_upper(request.country_code[1])}}
   };
 
   std::string url = impl_->config.base_url;
@@ -565,6 +590,13 @@ EnrichmentResponse Client::enrichTransaction(
   s.SetBody(cpr::Body{body.dump()});
   s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
   s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
+  s.SetProgressCallback(cpr::ProgressCallback{
+      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
+        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
+        return true;
+      }});
 
   cpr::Response res = s.Post();
 
@@ -598,11 +630,11 @@ BulkEnrichmentResponse Client::enrichTransactions(
 
   nlohmann::json body_array = nlohmann::json::array();
   for (const auto& r : requests) {
-    EnrichmentRequest req_copy = r;
-    validate_and_normalize_request(req_copy, "enrichTransactions");
+    validate_request(r, "enrichTransactions");
     body_array.push_back({
-        {"content", std::move(req_copy.content)},
-        {"countryCode", std::move(req_copy.country_code)}
+        {"content", r.content},
+        {"countryCode", std::string{ascii_upper(r.country_code[0]),
+                                    ascii_upper(r.country_code[1])}}
     });
   }
 
@@ -618,6 +650,13 @@ BulkEnrichmentResponse Client::enrichTransactions(
   s.SetBody(cpr::Body{body_array.dump()});
   s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
   s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
+  s.SetProgressCallback(cpr::ProgressCallback{
+      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
+        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
+        return true;
+      }});
 
   cpr::Response res = s.Post();
 
@@ -670,6 +709,13 @@ EnrichmentStatus Client::getEnrichmentStatus(
   s.SetHeader(headers);
   s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
   s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
+  s.SetProgressCallback(cpr::ProgressCallback{
+      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
+        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
+        return true;
+      }});
 
   cpr::Response res = s.Get();
 
@@ -726,6 +772,13 @@ inline bool is_path_traversal(std::string_view path) {
     start = end + 1;
   }
   return false;
+}
+
+inline bool rest_is_all_zero(const std::string& tar_bytes, std::size_t offset) {
+  for (std::size_t i = offset; i < tar_bytes.size(); ++i) {
+    if (tar_bytes[i] != '\0') return false;
+  }
+  return true;
 }
 
 std::string gunzip(const std::string& compressed) {
@@ -802,7 +855,8 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     }
     if (all_zero) {
       offset += TAR_BLOCK_SIZE;
-      continue;
+      if (rest_is_all_zero(tar_bytes, offset)) break; // trailing EOF padding
+      continue; // another non-zero archive member follows
     }
 
     unsigned int expected_chk = 0;
@@ -924,8 +978,7 @@ Client::downloadEnrichmentCollection(
   bool is_same_port = (target_url.port == base_url.port);
   bool is_allowed_domain = false;
   for (const auto& domain : impl_->config.allowed_download_domains) {
-    if (target_url.host.size() >= domain.size() &&
-        target_url.host.rfind(domain) == (target_url.host.size() - domain.size())) {
+    if (host_matches(target_url.host, domain)) {
       is_allowed_domain = true;
       break;
     }

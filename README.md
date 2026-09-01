@@ -70,7 +70,7 @@ Add `xyo-sdk` to your `conanfile.txt`:
 
 ```ini
 [requires]
-xyo-sdk/2.1.0
+xyo-sdk/2.2.0
 
 [generators]
 CMakeDeps
@@ -137,7 +137,7 @@ include(FetchContent)
 FetchContent_Declare(
   xyo_sdk
   GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
-  GIT_TAG        v2.1.0
+  GIT_TAG        v2.2.0
 )
 FetchContent_MakeAvailable(xyo_sdk)
 
@@ -537,10 +537,12 @@ The `xyo::ClientConfig` struct governs connection, authentication, and timeout p
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `api_key` | `std::string` | *(Required)* | Secret API Bearer token from the XYO dashboard |
-| `base_url` | `std::string` | `"https://api.xyo.financial"` | API gateway base endpoint URL |
+| `base_url` | `std::string` | `"https://api.xyo.financial"` | API gateway base endpoint URL (must use HTTPS unless `allow_insecure_transport` is true) |
+| `allow_insecure_transport` | `bool` | `false` | Explicit opt-in flag to permit plaintext HTTP endpoints for local test servers |
 | `connect_timeout_ms` | `long` | `5000` (5s) | Timeout for establishing the connection alone, applied to every request |
 | `request_timeout_ms` | `long` | `30000` (30s) | End-to-end HTTP request timeout, connection included |
-| `max_collection_size` | `std::size_t` | `1000` | Maximum item limit per batch request |
+| `max_collection_size` | `std::size_t` | `50000` | Maximum item limit per batch request (1 to 50,000 items) |
+| `allowed_download_domains` | `std::vector<std::string>` | `{"amazonaws.com"}` | Allowlist of trusted storage domains for bulk archive downloads |
 
 ---
 
