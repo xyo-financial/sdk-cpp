@@ -120,7 +120,11 @@ inline void validate_batch_size(std::size_t size, std::size_t max_collection_siz
 }
 
 inline void validate_job_id(const std::string& id) {
-  if (id.empty() || id.size() > 128) {
+  if (id.empty()) {
+    throw Error(ErrorCategory::validation,
+                "getEnrichmentStatus: id must not be empty");
+  }
+  if (id.size() > 128) {
     throw Error(ErrorCategory::validation,
                 "getEnrichmentStatus: id must be 1-128 characters");
   }
