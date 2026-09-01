@@ -365,11 +365,9 @@ When cutting a new release (e.g. bumping from `2.1.0` to `X.Y.Z`), update the fo
      "X.Y.Z":
        folder: "all"
    ```
-5. **`conanfile.py`**: Verify fallback version in `set_version()`:
+5. **`conanfile.py`**: Update recipe version attribute:
    ```python
-   def set_version(self):
-       if not self.version:
-           self.version = "X.Y.Z"
+   version = "X.Y.Z"
    ```
 6. **`CHANGELOG.md`**: Document all user-facing additions, fixes, and breaking changes under the release header:
    ```markdown
