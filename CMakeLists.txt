@@ -64,6 +64,12 @@ target_link_libraries(xyo_sdk
     OpenSSL::Crypto
 )
 
+if(MSVC)
+  target_compile_options(xyo_sdk PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(xyo_sdk PRIVATE -Wall -Wextra)
+endif()
+
 set_target_properties(xyo_sdk PROPERTIES
   VERSION     ${PROJECT_VERSION}
   SOVERSION   ${PROJECT_VERSION_MAJOR}
