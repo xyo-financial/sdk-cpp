@@ -27,10 +27,12 @@
 #include <limits>
 #include <locale>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -536,12 +538,50 @@ Error::Error(ErrorCategory category, const std::string& message,
 
 struct Client::Impl {
   ClientConfig config;
+  mutable std::mutex mu;
+  mutable std::unordered_map<std::thread::id, std::unique_ptr<cpr::Session>> sessions;
 
   explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {}
 
   cpr::Session& session() const {
-    thread_local std::unordered_map<const Impl*, cpr::Session> sessions;
-    return sessions[this];
+    const auto tid = std::this_thread::get_id();
+    std::lock_guard<std::mutex> lock(mu);
+    auto& slot = sessions[tid];
+    if (!slot) slot = std::make_unique<cpr::Session>();
+    return *slot;
+  }
+
+  cpr::Response send_request(const std::string& subpath,
+                             const std::string& method,
+                             const std::string& body_dump,
+                             const EnrichmentRequestOptions& options) const {
+    std::string url = config.base_url;
+    if (!url.empty() && url.back() == '/') url.pop_back();
+    url += subpath;
+
+    cpr::Header headers = build_headers(
+        config.api_key,
+        body_dump.empty() ? "" : "application/json",
+        "application/json",
+        options);
+
+    auto& s = session();
+    s.SetUrl(cpr::Url{url});
+    s.SetHeader(headers);
+    if (!body_dump.empty()) {
+      s.SetBody(cpr::Body{body_dump});
+    }
+    s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(config.connect_timeout_ms)});
+    s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(config.request_timeout_ms))});
+    s.SetProgressCallback(cpr::ProgressCallback{
+        [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+           cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+          if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
+          if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
+          return true;
+        }});
+
+    return (method == "POST") ? s.Post() : s.Get();
   }
 };
 
@@ -583,27 +623,7 @@ EnrichmentResponse Client::enrichTransaction(
                                   ascii_upper(request.country_code[1])}}
   };
 
-  std::string url = impl_->config.base_url;
-  if (!url.empty() && url.back() == '/') url.pop_back();
-  url += "/v1/ai/finance/enrichment/transaction";
-
-  cpr::Header headers = build_headers(impl_->config.api_key, "application/json", "application/json", options);
-
-  auto& s = impl_->session();
-  s.SetUrl(cpr::Url{url});
-  s.SetHeader(headers);
-  s.SetBody(cpr::Body{body.dump()});
-  s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
-  s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
-  s.SetProgressCallback(cpr::ProgressCallback{
-      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
-        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
-        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
-        return true;
-      }});
-
-  cpr::Response res = s.Post();
+  cpr::Response res = impl_->send_request("/v1/ai/finance/enrichment/transaction", "POST", body.dump(), options);
 
   if (res.error.code != cpr::ErrorCode::OK) {
     throw Error(ErrorCategory::transport,
@@ -643,27 +663,7 @@ BulkEnrichmentResponse Client::enrichTransactions(
     });
   }
 
-  std::string url = impl_->config.base_url;
-  if (!url.empty() && url.back() == '/') url.pop_back();
-  url += "/v1/ai/finance/enrichment/transactions";
-
-  cpr::Header headers = build_headers(impl_->config.api_key, "application/json", "application/json", options);
-
-  auto& s = impl_->session();
-  s.SetUrl(cpr::Url{url});
-  s.SetHeader(headers);
-  s.SetBody(cpr::Body{body_array.dump()});
-  s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
-  s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
-  s.SetProgressCallback(cpr::ProgressCallback{
-      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
-        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
-        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
-        return true;
-      }});
-
-  cpr::Response res = s.Post();
+  cpr::Response res = impl_->send_request("/v1/ai/finance/enrichment/transactions", "POST", body_array.dump(), options);
 
   if (res.error.code != cpr::ErrorCode::OK) {
     throw Error(ErrorCategory::transport,
@@ -703,26 +703,7 @@ EnrichmentStatus Client::getEnrichmentStatus(
     const EnrichmentRequestOptions& options) const {
   validate_job_id(id);
 
-  std::string url = impl_->config.base_url;
-  if (!url.empty() && url.back() == '/') url.pop_back();
-  url += "/v1/ai/finance/enrichment/status/" + id;
-
-  cpr::Header headers = build_headers(impl_->config.api_key, "", "application/json", options);
-
-  auto& s = impl_->session();
-  s.SetUrl(cpr::Url{url});
-  s.SetHeader(headers);
-  s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)});
-  s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))});
-  s.SetProgressCallback(cpr::ProgressCallback{
-      [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
-        if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
-        if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
-        return true;
-      }});
-
-  cpr::Response res = s.Get();
+  cpr::Response res = impl_->send_request("/v1/ai/finance/enrichment/status/" + id, "GET", "", options);
 
   if (res.error.code != cpr::ErrorCode::OK) {
     throw Error(ErrorCategory::transport,
@@ -756,14 +737,15 @@ EnrichmentStatus Client::getEnrichmentStatus(
 
 namespace {
 
-constexpr std::size_t MAX_DECOMPRESSED_SIZE = 100 * 1024 * 1024; // 100 MB safety limit
-constexpr std::size_t MAX_ARCHIVE_BYTES     = 50 * 1024 * 1024;  // 50 MB safety limit
-constexpr std::size_t MAX_TAR_ENTRIES       = 50'000;
-constexpr std::size_t MAX_ENTRY_BYTES       = 10 * 1024 * 1024; // 10 MiB
-constexpr std::size_t TAR_BLOCK_SIZE        = 512;
-constexpr std::size_t TAR_SIZE_OFFSET       = 124;
-constexpr std::size_t TAR_SIZE_LEN          = 12;
-constexpr std::size_t TAR_TYPE_OFFSET       = 156;
+constexpr std::size_t MAX_DECOMPRESSED_SIZE       = 100 * 1024 * 1024; // 100 MB safety limit
+constexpr std::size_t MAX_ARCHIVE_BYTES           = 50 * 1024 * 1024;  // 50 MB safety limit
+constexpr std::size_t MAX_TAR_ENTRIES             = 50'000;
+constexpr std::size_t MAX_ENTRY_BYTES             = 10 * 1024 * 1024; // 10 MiB
+constexpr std::size_t TAR_BLOCK_SIZE              = 512;
+constexpr std::size_t MAX_TAR_BLOCKS_EXAMINED     = MAX_DECOMPRESSED_SIZE / TAR_BLOCK_SIZE;
+constexpr std::size_t TAR_SIZE_OFFSET             = 124;
+constexpr std::size_t TAR_SIZE_LEN                = 12;
+constexpr std::size_t TAR_TYPE_OFFSET             = 156;
 
 inline bool is_path_traversal(std::string_view path) {
   if (path.empty()) return false;
@@ -777,13 +759,6 @@ inline bool is_path_traversal(std::string_view path) {
     start = end + 1;
   }
   return false;
-}
-
-inline bool rest_is_all_zero(const std::string& tar_bytes, std::size_t offset) {
-  for (std::size_t i = offset; i < tar_bytes.size(); ++i) {
-    if (tar_bytes[i] != '\0') return false;
-  }
-  return true;
 }
 
 std::string gunzip(const std::string& compressed) {
@@ -850,8 +825,13 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
   std::vector<std::string_view> entries;
   const std::size_t total = tar_bytes.size();
   std::size_t offset = 0;
+  std::size_t blocks_examined = 0;
 
   while (offset + TAR_BLOCK_SIZE <= total) {
+    if (++blocks_examined > MAX_TAR_BLOCKS_EXAMINED) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: tar block limit exceeded");
+    }
     const char* hdr = tar_bytes.data() + offset;
 
     bool all_zero = true;
@@ -859,9 +839,12 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
       if (hdr[i] != '\0') all_zero = false;
     }
     if (all_zero) {
-      offset += TAR_BLOCK_SIZE;
-      if (rest_is_all_zero(tar_bytes, offset)) break; // trailing EOF padding
-      continue; // another non-zero archive member follows
+      // Linear single-pass zero-run walk (T1)
+      std::size_t p = offset + TAR_BLOCK_SIZE;
+      while (p < total && tar_bytes[p] == '\0') ++p;
+      if (p == total) break; // trailing end-of-archive padding
+      offset = p - (p % TAR_BLOCK_SIZE); // resume at the next member's aligned header
+      continue;
     }
 
     unsigned int expected_chk = 0;

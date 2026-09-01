@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Defensive Transport Safeguards**: Added `allow_insecure_transport` check, API key trailing newline/CRLF rejection, job ID allowlisting (`[a-zA-Z0-9_-]`), and JSON response size ceilings (`MAX_JSON_RESPONSE_SIZE = 10 MiB`).
 
 ### Changed
-- **Zero-Allocation Batch Serialization**: Optimized `enrichTransactions` to validate against const references and format ISO 3166-1 alpha-2 uppercase codes in-place, eliminating tens of thousands of heap allocations during 50,000-item bulk batches.
+- **Eliminated Per-Item Request Copies**: Optimized `enrichTransactions` to validate against const references and format ISO 3166-1 alpha-2 uppercase codes in-place, eliminating tens of thousands of intermediate string copies during 50,000-item bulk batches.
 - **Raised Default Batch Size**: Aligned `ClientConfig::max_collection_size` default to `50,000` items matching API limits.
 - **ABI Version Bump**: Bumped version to `2.2.0` across CMake, Conan, and vcpkg manifests to reflect public ABI additions on `ClientConfig`, `EnrichmentRequestOptions`, and `Error`.
 

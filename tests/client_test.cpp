@@ -1372,23 +1372,25 @@ int main() {
       TEST_ASSERT(res.merchant == "QuickMerchant");
     }
 
-    // 10x. HTTP-date parsing under non-English locale (N2)
-    const char* prev_locale = std::setlocale(LC_ALL, nullptr);
-    std::string saved_loc = prev_locale ? prev_locale : "C";
-    std::setlocale(LC_ALL, "de_DE.UTF-8");
-    server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return HttpResponse{429, "application/json", R"({"title":"Rate Limited"})", {{"retry-after", "Wed, 21 Oct 2099 07:28:00 GMT"}, {"ratelimit-limit", "50"}}};
-    });
+    // 10x. HTTP-date parsing under non-English locale (T2)
     try {
-      (void)client.enrichTransaction({"test", "US"});
-      TEST_ASSERT(false);
-    } catch (const xyo::Error& e) {
-      TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
-      TEST_ASSERT(e.rate_limit_info().has_value());
-      TEST_ASSERT(e.rate_limit_info()->retry_after.has_value());
-      TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
+      std::locale original_loc = std::locale::global(std::locale("de_DE.UTF-8"));
+      server.set_handler([](const MockHttpServer::RecordedRequest&) {
+        return HttpResponse{429, "application/json", R"({"title":"Rate Limited"})", {{"retry-after", "Wed, 21 Oct 2099 07:28:00 GMT"}, {"ratelimit-limit", "50"}}};
+      });
+      try {
+        (void)client.enrichTransaction({"test", "US"});
+        TEST_ASSERT(false);
+      } catch (const xyo::Error& e) {
+        TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
+        TEST_ASSERT(e.rate_limit_info().has_value());
+        TEST_ASSERT(e.rate_limit_info()->retry_after.has_value());
+        TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
+      }
+      std::locale::global(original_loc);
+    } catch (const std::runtime_error&) {
+      std::cout << "[Test] de_DE.UTF-8 unavailable on host, locale case skipped\n";
     }
-    std::setlocale(LC_ALL, saved_loc.c_str());
 
     // 10y. Problem details log injection sanitisation in what() (N3)
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
@@ -1412,6 +1414,23 @@ int main() {
       expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
         (void)c.downloadEnrichmentCollection("https://notamazonaws.com/archive.tar.gz");
       });
+    }
+
+    // 10aa. Linear complexity on long zero-run followed by trailing data (T1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string four_mb_zeros(4 * 1024 * 1024, '\0');
+      four_mb_zeros += "trailing_corrupted_tar_block_bytes";
+      auto gz = gzip_compress(four_mb_zeros);
+      return gzip_response(200, gz);
+    });
+    {
+      auto start = std::chrono::steady_clock::now();
+      expects_error(xyo::ErrorCategory::parsing, "downloadEnrichmentCollection", [&] {
+        (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/long_zeros.tar.gz");
+      });
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start).count();
+      TEST_ASSERT(elapsed < 1000); // Must complete in well under 1 second (linear O(n))
     }
   }
 
