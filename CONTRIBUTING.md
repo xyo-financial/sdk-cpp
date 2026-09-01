@@ -304,7 +304,16 @@ ls -la /tmp/xyo_install_test/lib/cmake/XYOSDK/XYOSDKConfig.cmake
 
 ### 🧪 Conan 2.x Package Test (Optional)
 ```bash
-conan create . --build=missing
+# 🤝 Export and build recipe in Conan cache with version override
+conan create . --version=2.1.0 --build=missing -s compiler.cppstd=gnu17
+
+# 🤝 Verify downstream example application build against Conan package
+cd example
+conan install . --build=missing
+cmake --preset conan-release
+cmake --build build/Release
+./build/Release/xyo_example
+cd ..
 ```
 
 ---
@@ -332,18 +341,55 @@ conan create . --build=missing
 
 The XYO C++ SDK follows strict [Semantic Versioning (SemVer 2.0.0)](https://semver.org/):
 
-1. **Version Bump**: Update the project version in `CMakeLists.txt`:
+### 📋 Version Increment Checklist
+
+When cutting a new release (e.g. bumping from `2.1.0` to `X.Y.Z`), update the following files:
+
+1. **`CMakeLists.txt`**: Update root project version:
    ```cmake
    project(XYOSDK VERSION X.Y.Z LANGUAGES CXX)
    ```
-2. **Changelog**: Document all user-facing additions, fixes, and breaking changes in `CHANGELOG.md` under the version header `[X.Y.Z] - YYYY-MM-DD`.
-3. **PR & Merge**: Merge into the `main` branch after peer review and green CI builds across GCC, Clang, macOS, and Windows.
-4. **Git Release Tag**: Tag the release commit with matching `vX.Y.Z`:
+2. **`packaging/vcpkg/vcpkg.json`**: Update package manifest version:
+   ```json
+   "version": "X.Y.Z"
+   ```
+3. **`example/conanfile.txt`**: Update example dependency requirement:
+   ```ini
+   [requires]
+   xyo-sdk/X.Y.Z
+   ```
+4. **`packaging/conan/config.yml`** & **`packaging/conan/all/conandata.yml`**: Add the new version mapping and tarball checksum:
+   ```yaml
+   # packaging/conan/config.yml
+   versions:
+     "X.Y.Z":
+       folder: "all"
+   ```
+5. **`conanfile.py`**: Verify fallback version in `set_version()`:
+   ```python
+   def set_version(self):
+       if not self.version:
+           self.version = "X.Y.Z"
+   ```
+6. **`CHANGELOG.md`**: Document all user-facing additions, fixes, and breaking changes under the release header:
+   ```markdown
+   ## [X.Y.Z] - YYYY-MM-DD
+   ```
+
+### 🚀 Release Workflow & Tagging
+
+1. **PR & Merge**: Submit a release PR (e.g. `release/vX.Y.Z`) to `main`. Merge after all peer reviews and CI checks pass.
+2. **Git Release Tag**: Create an annotated git tag pointing to the merged commit on `main`:
    ```bash
-   git tag vX.Y.Z
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
    git push origin vX.Y.Z
    ```
-5. **Automated CI/CD**: The `.github/workflows/release.yml` pipeline triggers automatically to compile binary packages, generate Software Bill of Materials (SBOMs), generate SLSA cryptographic attestations, and publish the GitHub Release.
+3. **Automated CI/CD**: The `.github/workflows/release.yml` pipeline triggers automatically upon tag push to:
+   - Run unit and integration tests across Linux GCC, Clang, macOS, and Windows MSVC.
+   - Generate Software Bill of Materials (SPDX SBOM) and SLSA cryptographic attestations.
+   - Publish the GitHub Release with source tarball archives and SHA-256 checksums.
+   - Export the release version into the Conan cache and verify downstream example build.
+   - Dispatch SDK version updates to the central repository.
 
 ---
 
