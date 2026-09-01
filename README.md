@@ -9,9 +9,9 @@
 <p align="center">
   <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI Build Pipeline" /></a>
   <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg" alt="Release Pipeline" /></a>
-  <img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" />
-  <img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" />
-  <img src="https://img.shields.io/badge/Transport-CPR%20%2F%20libcurl-informational" alt="Transport" />
+  <a href="https://en.cppreference.com/w/cpp/17"><img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" /></a>
+  <a href="https://en.cppreference.com/w/cpp/language/pimpl"><img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" /></a>
+  <a href="https://docs.libcpr.org/"><img src="https://img.shields.io/badge/Transport-CPR%20%2F%20libcurl-informational" alt="Transport" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" /></a>
 </p>
 
