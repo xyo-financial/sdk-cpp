@@ -1,4 +1,4 @@
-# Contributing to XYO C++ SDK
+# 🤝 Contributing to XYO C++ SDK
 
 Thank you for your interest in contributing to the **XYO C++ SDK**. This repository provides the institutional-grade modern C++17 client library for the [XYO.Financial](https://xyo.financial) transaction enrichment platform.
 
@@ -7,29 +7,31 @@ To maintain strict performance, memory safety, ABI stability, and consistency ac
 ---
 
 ## 📑 Table of Contents
-
-1. [Architecture](#architecture)
-   - [Public API (`include/xyo/client.hpp`)](#1-public-api-includexyoclienthpp)
-   - [Implementation (`src/client.cpp`)](#2-implementation-srcclientcpp)
-2. [Contribution Workflow & Decision Matrix](#contribution-workflow--decision-matrix)
-   - [API & Data Model Changes](#api--data-model-changes)
-   - [SDK Ergonomics, Helpers & Tests](#sdk-ergonomics-helpers--tests)
-3. [Specification Synchronization](#specification-synchronization)
-   - [Automated Cross-Repository Verification](#automated-cross-repository-verification)
-   - [Running the Coverage Check Locally](#running-the-coverage-check-locally)
-   - [Applying a Specification Change](#applying-a-specification-change)
-4. [Prerequisites & Development Environment](#prerequisites--development-environment)
-5. [Build & Quality Gates](#build--quality-gates)
-   - [1. CMake Build](#1-cmake-build)
-   - [2. CTest & Mock HTTP Test Suite](#2-ctest--mock-http-test-suite)
-   - [3. Code Formatting & Style (Excluding Generated Code)](#3-code-formatting--style-excluding-generated-code)
-   - [4. Sanitizers & Memory Safety](#4-sanitizers--memory-safety)
-6. [Packaging Verification](#packaging-verification)
-7. [Submitting a Pull Request](#submitting-a-pull-request)
-8. [Release & Versioning Process](#release--versioning-process)
-9. [Security](#security)
-
----
+- [🏗 Architecture](#architecture)
+  - [🔹 1. Public API (`include/xyo/client.hpp`)](#1-public-api-includexyoclienthpp)
+  - [🔹 2. Implementation (`src/client.cpp`)](#2-implementation-srcclientcpp)
+- [🔀 Contribution Workflow & Decision Matrix](#contribution-workflow-decision-matrix)
+- [⚙️ Specification Synchronization](#specification-synchronization)
+  - [🔹 Why the reference is not the product](#why-the-reference-is-not-the-product)
+  - [🔹 How to use it](#how-to-use-it)
+  - [🔹 The isolation is structural](#the-isolation-is-structural)
+  - [🔹 Automated Cross-Repository Verification](#automated-cross-repository-verification)
+  - [🔹 Running the Coverage Check Locally](#running-the-coverage-check-locally)
+  - [⚙️ Applying a Specification Change](#applying-a-specification-change)
+- [🛠 Prerequisites & Development Environment](#prerequisites-development-environment)
+  - [🔹 Required Toolchain](#required-toolchain)
+  - [🔹 Package Installation](#package-installation)
+- [🛡 Build & Quality Gates](#build-quality-gates)
+  - [🛡 1. CMake Build](#1-cmake-build)
+  - [🧪 2. CTest & Mock HTTP Test Suite](#2-ctest-mock-http-test-suite)
+  - [🔹 3. Code Formatting & Style](#3-code-formatting-style)
+  - [🔹 4. Sanitizers & Memory Safety](#4-sanitizers-memory-safety)
+- [📦 Packaging Verification](#packaging-verification)
+  - [🧪 CMake Install Test](#cmake-install-test)
+  - [🧪 Conan 2.x Package Test (Optional)](#conan-2x-package-test-optional)
+- [🚀 Submitting a Pull Request](#submitting-a-pull-request)
+- [📦 Release & Versioning Process](#release-versioning-process)
+- [🔒 Security](#security)
 
 ## 🏗 Architecture
 
@@ -61,13 +63,13 @@ The XYO C++ SDK is hand-written against the [`xyo-financial/specs`](https://gith
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 1. Public API (`include/xyo/client.hpp`)
+### 🔹 1. Public API (`include/xyo/client.hpp`)
 - **Design Pattern**: Pointer to Implementation (**PIMPL**) idiom (`std::unique_ptr<Impl> impl_`).
 - **Zero Leaky Abstractions**: Exposes only standard C++17 types (`std::string`, `std::optional`, `std::vector`, `std::unique_ptr`). Third-party headers such as `<cpr/*>`, `<nlohmann/*>` and `<zlib.h>` are strictly confined to `src/client.cpp`.
 - **Type-Safe Domain Models**: Simple domain structs (`xyo::EnrichmentRequest`, `xyo::EnrichmentResponse`, `xyo::BulkEnrichmentResponse`, `xyo::EnrichmentStatus`).
 - **Structured Error Hierarchy**: `xyo::Error` with strongly typed `xyo::ErrorCategory` (`validation`, `transport`, `http`, `parsing`, `rate_limit`), HTTP status code accessors and optional `xyo::RateLimitInfo`.
 
-### 2. Implementation (`src/client.cpp`)
+### 🔹 2. Implementation (`src/client.cpp`)
 - **Transport**: `cpr` over system libcurl; `nlohmann::json` for serialization.
 - **Archive Handling**: In-memory `zlib` decompression and a bespoke POSIX ustar reader for bulk result archives, bounded by explicit size, entry-count and path-traversal guards.
 - **Credential Hygiene**: API keys are wiped with `OPENSSL_cleanse` on destruction; header values are validated to prevent CRLF injection.
@@ -98,17 +100,17 @@ Before writing code, identify which repository is authoritative for your propose
 > **`openapi/` is a development reference. It is never built, linked or shipped.**
 > The code that ships is `src/client.cpp` and `include/xyo/client.hpp`, written and maintained by hand.
 
-### Why the reference is not the product
+### 🔹 Why the reference is not the product
 
 The `cpp-restsdk` generator emits code against Microsoft's cpprestsdk. That library was archived on 1 June 2026 and removed from vcpkg the following day ([microsoft/vcpkg#52130](https://github.com/microsoft/vcpkg/pull/52130)), so there is no longer a port to install on any triplet. Anything linking it would be uninstallable everywhere, not merely heavy on Android. This is why C++ does not follow the fleet convention of generating and wrapping; see [#29](https://github.com/xyo-financial/sdk-cpp/issues/29).
 
 Generating it anyway is still worth the effort. It turns a specification change into a concrete, reviewable diff in C++ terms, rather than prose someone has to notice and interpret.
 
-### How to use it
+### 🔹 How to use it
 
 When a specification tag lands, `.github/workflows/generate.yml` regenerates `openapi/` and opens a pull request. **Read that diff as a description of what changed in the contract**, then implement anything material by hand in `src/client.cpp`, expose it in `include/xyo/client.hpp`, and cover it in `tests/client_test.cpp`. Merging the pull request updates the reference only; it changes nothing that ships.
 
-### The isolation is structural
+### 🔹 The isolation is structural
 
 Four properties keep the reference out of everything that reaches a consumer, and the workflow asserts each on every run rather than trusting them:
 
@@ -126,7 +128,7 @@ CI compiles the reference in isolation using Ubuntu's `libcpprest-dev`, which st
 
 **There is no code generation in this repository.** The client is written and maintained by hand. A specification change therefore does not apply itself; it has to be implemented deliberately, and CI exists to make sure it is not forgotten.
 
-### Automated Cross-Repository Verification
+### 🔹 Automated Cross-Repository Verification
 When a new release tag or specification update is pushed to [`xyo-financial/specs`](https://github.com/xyo-financial/specs), an automated GitHub Actions workflow triggers a `repository_dispatch` event (`types: [spec_tagged, spec_updated]`) to this repository. The [`.github/workflows/spec-check.yml`](.github/workflows/spec-check.yml) workflow:
 
 1. Checks out `xyo-financial/specs` at the designated tag or ref (`${{ github.event.client_payload.tag || inputs.spec_ref || 'main' }}`).
@@ -136,7 +138,7 @@ When a new release tag or specification update is pushed to [`xyo-financial/spec
 
 You can also trigger verification manually via GitHub Actions **Workflow Dispatch** with an optional `spec_ref` parameter.
 
-### Running the Coverage Check Locally
+### 🔹 Running the Coverage Check Locally
 
 #### Prerequisites
 - Python 3.8+ with PyYAML (`pip install pyyaml`)
@@ -151,7 +153,7 @@ python3 scripts/check_spec_coverage.py ../specs/openapi.yml
 
 The check covers request paths only. It deliberately does not attempt to verify HTTP methods, schemas or field names against hand-written code, because doing so produces false positives that train maintainers to ignore the result. Schema-level drift is caught by the mock-server suite in `tests/client_test.cpp`.
 
-### Applying a Specification Change
+### ⚙️ Applying a Specification Change
 1. Review the specification diff upstream in `xyo-financial/specs`.
 2. Implement the new or changed operation in `src/client.cpp`, keeping third-party headers behind the PIMPL boundary.
 3. Expose it on `xyo::Client` in `include/xyo/client.hpp` using standard C++17 types only.
@@ -162,7 +164,7 @@ The check covers request paths only. It deliberately does not attempt to verify 
 
 ## 🛠 Prerequisites & Development Environment
 
-### Required Toolchain
+### 🔹 Required Toolchain
 - **C++ Compiler**: C++17 compliant compiler (GCC 9+, Clang 10+, Apple Clang 12+, MSVC 2019+)
 - **Build System**: CMake 3.16+
 - **Core Dependencies**:
@@ -173,7 +175,7 @@ The check covers request paths only. It deliberately does not attempt to verify 
 
 `cpr` and `nlohmann_json` are resolved by `find_package` first and fetched via `FetchContent` when absent, so only libcurl, OpenSSL and zlib need to be present on the system.
 
-### Package Installation
+### 🔹 Package Installation
 
 #### macOS (Homebrew)
 ```bash
@@ -207,15 +209,15 @@ sudo dnf install -y \
 
 All pull requests must cleanly pass every quality gate before being considered for review.
 
-### 1. CMake Build
+### 🛡 1. CMake Build
 
 Configure and compile the library and test targets in `Debug` and `Release` modes:
 
 ```bash
-# Configure debug build with tests enabled
+# 🤝 Configure debug build with tests enabled
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DXYO_BUILD_TESTS=ON
 
-# Compile with parallel build jobs
+# 🤝 Compile with parallel build jobs
 cmake --build build --parallel
 ```
 
@@ -225,7 +227,7 @@ cmake --preset debug
 cmake --build --preset debug
 ```
 
-### 2. CTest & Mock HTTP Test Suite
+### 🧪 2. CTest & Mock HTTP Test Suite
 
 The test suite in `tests/client_test.cpp` features an embedded loopback HTTP server built directly on BSD/Winsock sockets, with no external test framework, that validates:
 - Real HTTP wire transport and header propagation (e.g. `Authorization: Bearer <token>`, `Content-Type: application/json`).
@@ -249,7 +251,7 @@ Or execute the test binary directly:
 ./build/xyo_sdk_tests
 ```
 
-### 3. Code Formatting & Style
+### 🔹 3. Code Formatting & Style
 
 This project strictly adheres to modern C++ Core Guidelines and LLVM/Google C++ formatting standards:
 - 2 spaces indentation, no tabs.
@@ -268,18 +270,18 @@ clang-format -i \
   example/main.cpp
 ```
 
-### 4. Sanitizers & Memory Safety
+### 🔹 4. Sanitizers & Memory Safety
 
 To guarantee zero memory leaks, thread-safety, and lack of undefined behavior, run builds under LLVM sanitizers (AddressSanitizer and UndefinedBehaviorSanitizer):
 
 ```bash
-# Configure with ASan and UBSan
+# 🤝 Configure with ASan and UBSan
 cmake -S . -B build-asan \
   -DCMAKE_BUILD_TYPE=Debug \
   -DXYO_BUILD_TESTS=ON \
   -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 
-# Build and execute sanitized test suite
+# 🤝 Build and execute sanitized test suite
 cmake --build build-asan --parallel
 ctest --test-dir build-asan --output-on-failure
 ```
@@ -290,17 +292,17 @@ ctest --test-dir build-asan --output-on-failure
 
 Ensure CMake packaging, target exports, and header installations work seamlessly for downstream consumers:
 
-### CMake Install Test
+### 🧪 CMake Install Test
 ```bash
-# Install to temporary staging directory
+# 🤝 Install to temporary staging directory
 cmake --install build --prefix /tmp/xyo_install_test
 
-# Verify exported headers and CMake configuration files
+# 🤝 Verify exported headers and CMake configuration files
 ls -la /tmp/xyo_install_test/include/xyo/client.hpp
 ls -la /tmp/xyo_install_test/lib/cmake/XYOSDK/XYOSDKConfig.cmake
 ```
 
-### Conan 2.x Package Test (Optional)
+### 🧪 Conan 2.x Package Test (Optional)
 ```bash
 conan create . --build=missing
 ```
