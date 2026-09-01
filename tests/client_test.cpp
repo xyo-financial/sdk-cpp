@@ -1221,22 +1221,32 @@ int main() {
     ::unsetenv("XYO_API_BASE_URL");
     #endif
 
-    // 10p. Tar Zip Slip / path traversal entry is safely ignored
+    // 10p. Tar Zip Slip / path traversal entry throws parsing error
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      std::string safe_json = R"({"merchant":"SafeCo","description":"Safe","logo":"url","categories":[]})";
       std::string evil_json = R"({"merchant":"EvilCo","description":"Evil","logo":"url","categories":[]})";
       std::string tar = create_tar_archive({
-          {"../../etc/passwd.json", evil_json},
-          {"/absolute/root.json", evil_json},
-          {"valid.json", safe_json}
+          {"../../etc/passwd.json", evil_json}
       });
       auto gz = gzip_compress(tar);
       return gzip_response(200, gz);
     });
-    {
-      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
-      TEST_ASSERT(results.size() == 1);
-      TEST_ASSERT(results[0].merchant == "SafeCo");
+    expects_error(xyo::ErrorCategory::parsing, "path traversal detected", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
+    });
+
+    // 10q. Rate limiting with RFC 7231 / RFC 9110 HTTP-date Retry-After
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{429, "application/json", R"({"title":"Too Many Requests"})", {{"retry-after", "Wed, 21 Oct 2099 07:28:00 GMT"}, {"ratelimit-limit", "100"}}};
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
+      TEST_ASSERT(e.rate_limit_info().has_value());
+      TEST_ASSERT(e.rate_limit_info()->retry_after.has_value());
+      TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
+      TEST_ASSERT(e.rate_limit_info()->limit == 100);
     }
   }
 

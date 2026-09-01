@@ -17,9 +17,12 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <initializer_list>
+#include <iomanip>
 #include <limits>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -105,9 +108,24 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
       info.retry_after = std::stoll(*val);
       found = true;
     } catch (const std::invalid_argument&) {
-      // Retry-After may be an HTTP-date string (RFC 7231 §7.1.3) rather than a
-      // delta-seconds integer. Date-string parsing is not implemented; the field
-      // is left unset so callers should treat a missing retry_after as unknown.
+      // Parse RFC 7231 / RFC 9110 HTTP-date string (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
+      std::tm tm_buf{};
+      std::istringstream ss(*val);
+      ss >> std::get_time(&tm_buf, "%a, %d %b %Y %H:%M:%S GMT");
+      if (!ss.fail()) {
+#ifdef _WIN32
+        auto target_time = _mkgmtime(&tm_buf);
+#else
+        auto target_time = timegm(&tm_buf);
+#endif
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        if (target_time > now) {
+          info.retry_after = static_cast<int64_t>(target_time - now);
+        } else {
+          info.retry_after = 0;
+        }
+        found = true;
+      }
     } catch (const std::out_of_range&) {
     }
   }
@@ -279,10 +297,11 @@ ParsedUrl parse_url(const std::string& url_str) {
 }
 
 EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
-  EnrichmentResponse out;
   if (!json_data.is_object()) {
-    return out;
+    throw Error(ErrorCategory::parsing,
+                "parse_enrichment_response: expected JSON object for enrichment response");
   }
+  EnrichmentResponse out;
   if (json_data.contains("merchant") && json_data["merchant"].is_string()) {
     out.merchant = json_data.value("merchant", "");
   } else {
@@ -700,7 +719,19 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     bool is_traversal = (entry_name.find("..") != std::string::npos ||
                          (!entry_name.empty() && (entry_name.front() == '/' || entry_name.front() == '\\')));
 
-    if ((typeflag == '0' || typeflag == '\0') && file_size > 0 && !is_traversal) {
+    if (is_traversal) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: path traversal detected in tar archive entry '" +
+                       entry_name + "'");
+    }
+
+    if (typeflag == '5') {
+      // Directory entry in tar archive, skip content
+    } else if (typeflag != '0' && typeflag != '\0') {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: unsupported tar entry typeflag '" +
+                       std::string(1, typeflag) + "' for entry '" + entry_name + "'");
+    } else if (file_size > 0) {
       if (file_size > MAX_ENTRY_BYTES) {
         throw xyo::Error(xyo::ErrorCategory::parsing,
                          "downloadEnrichmentCollection: tar entry size exceeds safety limit (10MB)");
@@ -805,6 +836,7 @@ Client::downloadEnrichmentCollection(
   cpr::Response response = cpr::Get(
       cpr::Url{full_url},
       headers,
+      cpr::Redirect{5L, true, true, cpr::PostRedirectFlags::NONE},
       cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
       cpr::Timeout{std::chrono::milliseconds(impl_->config.request_timeout_ms)}
   );
@@ -813,6 +845,25 @@ Client::downloadEnrichmentCollection(
     throw Error(ErrorCategory::transport,
                 "downloadEnrichmentCollection: request failed: " + response.error.message,
                 0, static_cast<int>(response.error.code));
+  }
+
+  // Validate effective URL post-redirect to prevent SSRF via open redirectors
+  std::string effective_url_str = response.url.str();
+  if (!effective_url_str.empty() && effective_url_str != full_url) {
+    ParsedUrl eff_url = parse_url(effective_url_str);
+    bool eff_is_https = (eff_url.scheme == "https");
+    if (base_is_https && !eff_is_https) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: redirect to insecure HTTP destination refused");
+    }
+    bool eff_is_same_host = (eff_url.host == base_url.host && eff_url.port == base_url.port);
+    bool eff_is_s3 = (eff_url.host.size() >= 14 &&
+                      eff_url.host.rfind(".amazonaws.com") == (eff_url.host.size() - 14));
+    if (!eff_is_same_host && !eff_is_s3) {
+      throw Error(ErrorCategory::validation,
+                  "downloadEnrichmentCollection: redirect destination domain \"" + eff_url.host +
+                      "\" is not permitted for secure archive downloads");
+    }
   }
 
   check_and_throw_http_error(response, "downloadEnrichmentCollection");
@@ -832,6 +883,14 @@ Client::downloadEnrichmentCollection(
                       "' received when expecting binary archive",
                   response.status_code);
     }
+  }
+
+  constexpr std::size_t MAX_COMPRESSED_ARCHIVE_SIZE = 50 * 1024 * 1024; // 50 MiB cap
+  if (response.text.size() > MAX_COMPRESSED_ARCHIVE_SIZE) {
+    throw Error(ErrorCategory::parsing,
+                "downloadEnrichmentCollection: response payload (" +
+                std::to_string(response.text.size()) +
+                " bytes) exceeds maximum allowable compressed archive limit of 50MB");
   }
 
   if (response.text.empty()) {
@@ -857,6 +916,11 @@ Client::downloadEnrichmentCollection(
   } catch (const std::exception& e) {
     throw Error(ErrorCategory::parsing,
                 std::string("downloadEnrichmentCollection: tar parsing error: ") + e.what());
+  }
+
+  if (raw_entries.empty()) {
+    throw Error(ErrorCategory::parsing,
+                "downloadEnrichmentCollection: tar archive contains no valid data entries");
   }
 
   std::vector<EnrichmentResponse> results;
