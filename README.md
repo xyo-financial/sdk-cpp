@@ -70,7 +70,7 @@ Add `xyo-sdk` to your `conanfile.txt`:
 
 ```ini
 [requires]
-xyo-sdk/2.1.0
+xyo-sdk/3.0.0
 
 [generators]
 CMakeDeps
@@ -137,7 +137,7 @@ include(FetchContent)
 FetchContent_Declare(
   xyo_sdk
   GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
-  GIT_TAG        v2.1.0
+  GIT_TAG        v2.2.0
 )
 FetchContent_MakeAvailable(xyo_sdk)
 
@@ -468,8 +468,7 @@ private:
 For institutional core ledgers, settlement engines, and high-frequency transaction processing pipelines, C++ provides deterministic execution guarantees that are impossible with managed runtimes:
 
 - **Zero Garbage Collection Pause Jitter**: Managed runtimes (Java, Node.js, Go, .NET) experience unpredictable stop-the-world GC pauses that degrade tail latency (p99/p99.9). The C++ SDK utilizes deterministic RAII memory management, achieving **zero Garbage Collection pause jitter (deterministic sub-millisecond p99 execution)** for critical financial rails and real-time fraud mitigation gates.
-- **PIMPL Compilation Speed & Monorepo Isolation**: The SDK's Pointer-to-Implementation (PIMPL) architecture encapsulates all transport and third-party dependencies (`cpr`/libcurl, `nlohmann_json`, `OpenSSL`, `zlib`) strictly within `src/client.cpp`. Header inclusion is instantaneous (`<xyo/client.hpp>` only imports standard library headers), eliminating translation-unit header bloat and drastically accelerating compile and link times in massive enterprise monorepos.
-- **Lock-Free Concurrency & Zero-Copy Streaming**: Public client methods are re-entrant and thread-safe without requiring application-level mutex locking. Bulk transaction collections are decompressed directly in memory through zero-copy streaming, bypassing disk I/O bottlenecks.
+- **Thread-Safe Concurrency & Zero-Copy In-Memory Decompression**: Public client methods are re-entrant and thread-safe without requiring application-level locking. Internal connection pooling maintains isolated sessions per worker thread. Bulk transaction collections are decompressed directly in memory through zero-copy streaming, bypassing disk I/O bottlenecks.
 
 ---
 
@@ -537,10 +536,12 @@ The `xyo::ClientConfig` struct governs connection, authentication, and timeout p
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `api_key` | `std::string` | *(Required)* | Secret API Bearer token from the XYO dashboard |
-| `base_url` | `std::string` | `"https://api.xyo.financial"` | API gateway base endpoint URL |
+| `base_url` | `std::string` | `"https://api.xyo.financial"` | API gateway base endpoint URL (must use HTTPS unless `allow_insecure_transport` is true) |
+| `allow_insecure_transport` | `bool` | `false` | Explicit opt-in flag to permit plaintext HTTP endpoints for local test servers |
 | `connect_timeout_ms` | `long` | `5000` (5s) | Timeout for establishing the connection alone, applied to every request |
 | `request_timeout_ms` | `long` | `30000` (30s) | End-to-end HTTP request timeout, connection included |
-| `max_collection_size` | `std::size_t` | `1000` | Maximum item limit per batch request |
+| `max_collection_size` | `std::size_t` | `50000` | Maximum item limit per batch request (1 to 50,000 items) |
+| `allowed_download_domains` | `std::vector<std::string>` | `{".amazonaws.com"}` | Allowlist of trusted storage domains for bulk archive downloads |
 
 ---
 

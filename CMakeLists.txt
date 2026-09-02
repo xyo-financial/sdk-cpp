@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(XYOSDK VERSION 2.1.0 LANGUAGES CXX)
+project(XYOSDK VERSION 3.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -64,11 +64,19 @@ target_link_libraries(xyo_sdk
     OpenSSL::Crypto
 )
 
+if(MSVC)
+  target_compile_options(xyo_sdk PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(xyo_sdk PRIVATE -Wall -Wextra)
+endif()
+
+target_compile_definitions(xyo_sdk INTERFACE $<$<BOOL:${BUILD_SHARED_LIBS}>:XYO_SDK_SHARED>)
+
 set_target_properties(xyo_sdk PROPERTIES
   VERSION     ${PROJECT_VERSION}
   SOVERSION   ${PROJECT_VERSION_MAJOR}
   EXPORT_NAME SDK
-  WINDOWS_EXPORT_ALL_SYMBOLS ON
+  DEFINE_SYMBOL "XYO_SDK_EXPORTS"
 )
 
 # ---------------------------------------------------------------------------
@@ -81,6 +89,11 @@ if(XYO_BUILD_TESTS)
   target_link_libraries(xyo_sdk_tests PRIVATE XYO::SDK nlohmann_json::nlohmann_json ZLIB::ZLIB)
   if(WIN32)
     target_link_libraries(xyo_sdk_tests PRIVATE ws2_32)
+  endif()
+  if(MSVC)
+    target_compile_options(xyo_sdk_tests PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(xyo_sdk_tests PRIVATE -Wall -Wextra)
   endif()
   add_test(NAME xyo_sdk_tests COMMAND xyo_sdk_tests)
 endif()

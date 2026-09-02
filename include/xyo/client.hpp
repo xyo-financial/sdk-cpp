@@ -43,6 +43,7 @@ struct XYO_SDK_API EnrichmentRequestOptions {
   std::optional<std::string> x_correlation_id;
   std::optional<std::string> traceparent;
   std::optional<std::string> x_api_user;
+  std::optional<long> request_timeout_ms; ///< Per-request timeout override (ms).
 };
 
 struct XYO_SDK_API EnrichmentRequest {
@@ -64,7 +65,7 @@ struct XYO_SDK_API BulkEnrichmentResponse {
   std::string link; ///< URL to downloadable tar.gz results archive.
 };
 
-enum class XYO_SDK_API EnrichmentStatus { ready, failed, pending };
+enum class EnrichmentStatus { ready, failed, pending };
 
 [[nodiscard]] XYO_SDK_API std::string to_string(EnrichmentStatus status);
 
@@ -75,15 +76,18 @@ enum class XYO_SDK_API EnrichmentStatus { ready, failed, pending };
 struct XYO_SDK_API ClientConfig {
   std::string api_key;
   std::string base_url = "https://api.xyo.financial";
+  bool allow_insecure_transport = false; ///< Set true to permit HTTP (e.g. in test suites).
 
   // Optional timeout overrides (milliseconds). Both are applied to every request.
   long connect_timeout_ms  = 5'000;  ///< Cap on establishing the connection alone.
   long request_timeout_ms  = 30'000; ///< Cap on the whole operation, connection included.
-  std::size_t max_collection_size = 1'000;
+  std::size_t max_collection_size = 50'000;
+  std::vector<std::string> allowed_download_domains = {".amazonaws.com"};
 
   ClientConfig();
   explicit ClientConfig(std::string key,
-                        std::string url = "");
+                        std::string url = "",
+                        bool allow_insecure = false);
 
   ClientConfig(const ClientConfig&) = delete;
   ClientConfig& operator=(const ClientConfig&) = delete;
@@ -103,7 +107,7 @@ struct XYO_SDK_API RateLimitInfo {
   std::optional<int64_t> retry_after; ///< Seconds until retry allowed
 };
 
-enum class XYO_SDK_API ErrorCategory { validation, transport, http, parsing, rate_limit };
+enum class ErrorCategory { validation, transport, http, parsing, rate_limit };
 
 [[nodiscard]] XYO_SDK_API std::string to_string(ErrorCategory category);
 
@@ -111,18 +115,33 @@ class XYO_SDK_API Error : public std::runtime_error {
  public:
   Error(ErrorCategory category, const std::string& message,
         long http_status_code = 0, int transport_code = 0,
-        std::optional<RateLimitInfo> rate_limit_info = std::nullopt);
+        std::optional<RateLimitInfo> rate_limit_info = std::nullopt,
+        std::optional<std::string> correlation_id = std::nullopt,
+        std::string problem_type = "",
+        std::string problem_title = "",
+        std::string problem_detail = "",
+        std::string problem_instance = "");
 
   ErrorCategory category()         const noexcept { return category_; }
   long          http_status_code() const noexcept { return http_status_code_; }
   int           transport_code()   const noexcept { return transport_code_; }
   const std::optional<RateLimitInfo>& rate_limit_info() const noexcept { return rate_limit_info_; }
+  const std::optional<std::string>& correlation_id() const noexcept { return correlation_id_; }
+  const std::string& problem_type()     const noexcept { return problem_type_; }
+  const std::string& problem_title()    const noexcept { return problem_title_; }
+  const std::string& problem_detail()   const noexcept { return problem_detail_; }
+  const std::string& problem_instance() const noexcept { return problem_instance_; }
 
  private:
   ErrorCategory category_         = ErrorCategory::validation;
   long          http_status_code_ = 0;
   int           transport_code_   = 0;
   std::optional<RateLimitInfo> rate_limit_info_;
+  std::optional<std::string> correlation_id_;
+  std::string problem_type_;
+  std::string problem_title_;
+  std::string problem_detail_;
+  std::string problem_instance_;
 };
 
 using XyoException = Error;

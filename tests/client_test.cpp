@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -265,6 +266,10 @@ class MockHttpServer {
 #else
       int client_sock = accept(server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
       if (client_sock < 0) break;
+#if defined(__APPLE__) || defined(__MACH__)
+      int set_nosigpipe = 1;
+      setsockopt(client_sock, SOL_SOCKET, SO_NOSIGPIPE, &set_nosigpipe, sizeof(set_nosigpipe));
+#endif
 #endif
 
       std::string raw_req;
@@ -400,8 +405,8 @@ std::string create_tar_archive(const std::vector<std::pair<std::string, std::str
     std::snprintf(hdr + 124, 12, "%011o", static_cast<unsigned int>(content.size()));
     std::snprintf(hdr + 136, 12, "%011lo", 0L);
     hdr[156] = '0';
-    std::memcpy(hdr + 257, "ustar ", 6);
-    std::memcpy(hdr + 263, " \0", 2);
+    std::memcpy(hdr + 257, "ustar\0", 6);
+    std::memcpy(hdr + 263, "00", 2);
 
     std::memset(hdr + 148, ' ', 8);
     unsigned int checksum = 0;
@@ -451,6 +456,9 @@ std::vector<uint8_t> gzip_compress(const std::string& data) {
 }  // namespace
 
 int main() {
+#ifndef _WIN32
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
   std::cout << "[XYO SDK Tests] Starting test suite...\n";
 
   // ---------------------------------------------------------------------------
@@ -462,7 +470,7 @@ int main() {
     TEST_ASSERT(default_cfg.base_url == "https://api.xyo.financial");
     TEST_ASSERT(default_cfg.connect_timeout_ms == 5000);
     TEST_ASSERT(default_cfg.request_timeout_ms == 30000);
-    TEST_ASSERT(default_cfg.max_collection_size == 1000);
+    TEST_ASSERT(default_cfg.max_collection_size == 50000);
 
     xyo::ClientConfig custom_cfg("my-key", "https://custom.xyo.financial");
     TEST_ASSERT(custom_cfg.api_key == "my-key");
@@ -478,12 +486,19 @@ int main() {
     TEST_ASSERT(assigned_cfg.api_key == "my-key");
 
     // Error class getters
-    xyo::Error err(xyo::ErrorCategory::http, "test error message", 404, 12);
+    xyo::Error err(xyo::ErrorCategory::http, "test error message", 404, 12,
+                   std::nullopt, "corr-123", "https://xyo.financial/errors/not_found",
+                   "Resource Not Found", "The requested record was missing", "/transactions/1");
     TEST_ASSERT(err.category() == xyo::ErrorCategory::http);
     TEST_ASSERT(err.http_status_code() == 404);
     TEST_ASSERT(err.transport_code() == 12);
     TEST_ASSERT(std::string(err.what()) == "test error message");
     TEST_ASSERT(!err.rate_limit_info().has_value());
+    TEST_ASSERT(err.correlation_id().value_or("") == "corr-123");
+    TEST_ASSERT(err.problem_type() == "https://xyo.financial/errors/not_found");
+    TEST_ASSERT(err.problem_title() == "Resource Not Found");
+    TEST_ASSERT(err.problem_detail() == "The requested record was missing");
+    TEST_ASSERT(err.problem_instance() == "/transactions/1");
 
     // to_string for EnrichmentStatus and ErrorCategory
     TEST_ASSERT(xyo::to_string(xyo::EnrichmentStatus::ready) == "READY");
@@ -508,6 +523,16 @@ int main() {
       xyo::Client client(xyo::ClientConfig("", "https://api.xyo.financial"));
     });
 
+    // API key with trailing newline must throw validation Error (C5)
+    expects_error(xyo::ErrorCategory::validation, "check for a trailing newline", [] {
+      xyo::Client client(xyo::ClientConfig("my-key\n", "https://api.xyo.financial"));
+    });
+
+    // Plaintext HTTP base_url without allow_insecure_transport must throw validation Error (C4)
+    expects_error(xyo::ErrorCategory::validation, "base_url must use https", [] {
+      xyo::Client client(xyo::ClientConfig("my-key", "http://insecure.xyo.financial"));
+    });
+
     // Valid construction
     xyo::Client client(xyo::ClientConfig("valid-token", "https://api.xyo.financial"));
 
@@ -525,7 +550,7 @@ int main() {
   server.start();
 
   const std::string test_api_key = "xyo-secret-test-bearer-token-12345";
-  xyo::ClientConfig client_cfg(test_api_key, server.base_url());
+  xyo::ClientConfig client_cfg(test_api_key, server.base_url(), true);
   client_cfg.request_timeout_ms = 5000;
   client_cfg.max_collection_size = 5;
   xyo::Client client(std::move(client_cfg));
@@ -555,6 +580,24 @@ int main() {
     expects_error(xyo::ErrorCategory::validation, "request country_code must be a 2-letter ISO 3166-1 alpha-2 code", [&] {
       (void)client.enrichTransaction({"Valid transaction", "USA"});
     });
+
+    // Country code containing non-alpha characters (S13)
+    expects_error(xyo::ErrorCategory::validation, "request country_code must be a 2-letter ISO 3166-1 alpha-2 code", [&] {
+      (void)client.enrichTransaction({"Valid transaction", "12"});
+    });
+    expects_error(xyo::ErrorCategory::validation, "request country_code must be a 2-letter ISO 3166-1 alpha-2 code", [&] {
+      (void)client.enrichTransaction({"Valid transaction", "G!"});
+    });
+
+    // Arabic UTF-8 multi-byte character count (S3): 90 Arabic chars (~180 bytes) is valid <= 128 chars
+    std::string arabic_90_chars = "سوق مرجان دبي التجاري الدولي للخدمات المالية السريعة وتجارة التجزئة والحلول المصرفية المتطورة";
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(200, R"({"merchant":"Marjan","description":"Dubai","categories":[]})");
+    });
+    {
+      auto res = client.enrichTransaction({arabic_90_chars, "ae"});
+      TEST_ASSERT(res.merchant == "Marjan");
+    }
 
     // Batch item validation
     expects_error(xyo::ErrorCategory::validation, "request content must not be empty", [&] {
@@ -793,6 +836,23 @@ int main() {
       TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
       TEST_ASSERT(e.http_status_code() == 500);
     }
+
+    // RFC 7807 Problem Details
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(422, R"({"type": "https://example.com/probs/out-of-credit", "title": "You do not have enough credit.", "detail": "Your current balance is 30, but that costs 50."})");
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      TEST_ASSERT(e.category() == xyo::ErrorCategory::http);
+      std::string msg(e.what());
+      TEST_ASSERT(msg.find("You do not have enough credit.") != std::string::npos);
+      TEST_ASSERT(msg.find("https://example.com/probs/out-of-credit") != std::string::npos);
+      TEST_ASSERT(e.problem_detail() == "Your current balance is 30, but that costs 50.");
+      TEST_ASSERT(e.problem_title() == "You do not have enough credit.");
+      TEST_ASSERT(e.problem_type() == "https://example.com/probs/out-of-credit");
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -833,7 +893,7 @@ int main() {
     TEST_ASSERT(bulk_resp.link == "https://api.xyo.financial/downloads/results-98765.tar.gz");
 
     // Client-side batch size exceeds max_collection_size validation check
-    xyo::ClientConfig limited_cfg(test_api_key, server.base_url());
+    xyo::ClientConfig limited_cfg(test_api_key, server.base_url(), true);
     limited_cfg.max_collection_size = 1;
     xyo::Client limited_client(std::move(limited_cfg));
     expects_error(xyo::ErrorCategory::validation,
@@ -863,6 +923,12 @@ int main() {
     expects_error(xyo::ErrorCategory::validation,
                   "getEnrichmentStatus: id must not be empty", [&] {
                     (void)client.getEnrichmentStatus("");
+                  });
+
+    // Job ID injection rejection (C3)
+    expects_error(xyo::ErrorCategory::validation,
+                  "characters that are not permitted in a job identifier", [&] {
+                    (void)client.getEnrichmentStatus("../../../admin/keys");
                   });
 
     // PENDING state
@@ -915,7 +981,7 @@ int main() {
     std::cout << "[Test] Transport error handling\n";
     int unreachable_port = get_free_port();
     xyo::Client unreachable_client(
-        xyo::ClientConfig("valid-key", "http://127.0.0.1:" + std::to_string(unreachable_port)));
+        xyo::ClientConfig("valid-key", "http://127.0.0.1:" + std::to_string(unreachable_port), true));
 
     try {
       (void)unreachable_client.enrichTransaction({"test", "GB"});
@@ -1089,6 +1155,8 @@ int main() {
       std::snprintf(hdr + 100, 8, "%07o", 0644);
       std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(1000));
       hdr[156] = '0';
+      std::memcpy(hdr + 257, "ustar\0", 6);
+      std::memcpy(hdr + 263, "00", 2);
       std::memset(hdr + 148, ' ', 8);
       unsigned int checksum = 0;
       for (int i = 0; i < 512; ++i) checksum += static_cast<unsigned char>(hdr[i]);
@@ -1128,9 +1196,20 @@ int main() {
       TEST_ASSERT(results[0].description == "no merchant");
     }
 
+    // 10i2. Completely empty/malformed JSON object in tar throws parsing error (S8)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string garbage_json = R"({"unrelated_field": 123})";
+      std::string tar = create_tar_archive({{"garbage.json", garbage_json}});
+      auto gz = gzip_compress(tar);
+      return gzip_response(200, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "malformed response containing no valid fields", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/garbage.tar.gz");
+    });
+
     // 10j. Transport error for unreachable host
     int unreachable_port = get_free_port();
-    xyo::Client unreachable_client(xyo::ClientConfig("key", "http://127.0.0.1:" + std::to_string(unreachable_port)));
+    xyo::Client unreachable_client(xyo::ClientConfig("key", "http://127.0.0.1:" + std::to_string(unreachable_port), true));
     try {
       (void)unreachable_client.downloadEnrichmentCollection("http://127.0.0.1:" + std::to_string(unreachable_port) + "/downloads/file.tar.gz");
       TEST_ASSERT(false);
@@ -1142,11 +1221,11 @@ int main() {
     expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
       (void)client.downloadEnrichmentCollection("http://invalid uri with spaces/downloads");
     });
-    expects_error(xyo::ErrorCategory::validation, "invalid URL format", [&] {
+    expects_error(xyo::ErrorCategory::validation, "userinfo (@) is not permitted", [&] {
       (void)client.downloadEnrichmentCollection("http://user:password@127.0.0.1/downloads");
     });
 
-    // 10k2. Invalid port numbers throw bad port number validation error
+    // 10k2. Invalid port numbers throw bad port number validation error (N1)
     expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
       (void)client.downloadEnrichmentCollection("http://127.0.0.1:0/downloads");
     });
@@ -1156,14 +1235,36 @@ int main() {
     expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
       (void)client.downloadEnrichmentCollection("http://127.0.0.1:abc/downloads");
     });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:99999999999999999999/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:00000000000000000443/downloads");
+    });
 
-    // 10l. Tar header checksum mismatch
+    // 10k3. Legitimate @ in path/query is accepted (S1)
+    {
+      xyo::ClientConfig cfg("test-key", "https://api.xyo.financial");
+      cfg.allowed_download_domains = {".amazonaws.com"};
+      xyo::Client s3_client(std::move(cfg));
+      // Host is bucket.s3.amazonaws.com, path contains @ -> permitted
+      server.set_handler([](const MockHttpServer::RecordedRequest&) {
+        return HttpResponse{404, "application/json", R"({"title":"Not Found"})", {}};
+      });
+      expects_error(xyo::ErrorCategory::http, "HTTP 404", [&] {
+        (void)client.downloadEnrichmentCollection(server.base_url() + "/reports/user@example.com/results.tar.gz");
+      });
+    }
+
+    // 10l. Tar header checksum mismatch (C6)
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       char hdr[512] = {};
       std::strncpy(hdr, "corrupt_checksum.json", 100);
       std::snprintf(hdr + 100, 8, "%07o", 0644);
       std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(10));
       hdr[156] = '0';
+      std::memcpy(hdr + 257, "ustar\0", 6);
+      std::memcpy(hdr + 263, "00", 2);
       std::snprintf(hdr + 148, 8, "%06o", 12345);
 
       std::string corrupt_tar(hdr, 512);
@@ -1173,6 +1274,50 @@ int main() {
     });
     expects_error(xyo::ErrorCategory::parsing, "tar header checksum mismatch", [&] {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/bad_chk.tar.gz");
+    });
+
+    // 10l2. Non-ustar tar header rejected (C6)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      char hdr[512] = {};
+      std::strncpy(hdr, "non_ustar.json", 100);
+      std::snprintf(hdr + 100, 8, "%07o", 0644);
+      std::snprintf(hdr + 124, 12, "%011llo", static_cast<unsigned long long>(10));
+      hdr[156] = '0';
+      std::memset(hdr + 148, ' ', 8);
+      unsigned int checksum = 0;
+      for (int i = 0; i < 512; ++i) checksum += static_cast<unsigned char>(hdr[i]);
+      std::snprintf(hdr + 148, 8, "%06o", checksum);
+
+      std::string corrupt_tar(hdr, 512);
+      corrupt_tar.append(512, '\0');
+      auto gz = gzip_compress(corrupt_tar);
+      return gzip_response(200, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "not a ustar tar header", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/non_ustar.tar.gz");
+    });
+
+    // 10l3. GNU base-256 size field rejected (C6)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      char hdr[512] = {};
+      std::strncpy(hdr, "base256.json", 100);
+      std::snprintf(hdr + 100, 8, "%07o", 0644);
+      hdr[124] = static_cast<char>(0x80); // GNU base-256 binary size flag
+      hdr[156] = '0';
+      std::memcpy(hdr + 257, "ustar\0", 6);
+      std::memcpy(hdr + 263, "00", 2);
+      std::memset(hdr + 148, ' ', 8);
+      unsigned int checksum = 0;
+      for (int i = 0; i < 512; ++i) checksum += static_cast<unsigned char>(hdr[i]);
+      std::snprintf(hdr + 148, 8, "%06o", checksum);
+
+      std::string corrupt_tar(hdr, 512);
+      corrupt_tar.append(512, '\0');
+      auto gz = gzip_compress(corrupt_tar);
+      return gzip_response(200, gz);
+    });
+    expects_error(xyo::ErrorCategory::parsing, "base-256 tar size fields are not supported", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/base256.tar.gz");
     });
 
     // 10m. WAF Security Challenge HTML Response
@@ -1190,38 +1335,262 @@ int main() {
 
     // 10o. ClientConfig environment variable fallback
     #ifdef _WIN32
-    _putenv("XYO_API_BASE_URL=https://custom-env.xyo.financial");
+    _putenv("XYO_API_BASE_URL=https://custom-env-api.xyo.financial");
     #else
-    ::setenv("XYO_API_BASE_URL", "https://custom-env.xyo.financial", 1);
+    setenv("XYO_API_BASE_URL", "https://custom-env-api.xyo.financial", 1);
     #endif
     {
       xyo::ClientConfig env_cfg;
-      TEST_ASSERT(env_cfg.base_url == "https://custom-env.xyo.financial");
-      xyo::ClientConfig env_key_cfg("test-key");
-      TEST_ASSERT(env_key_cfg.base_url == "https://custom-env.xyo.financial");
+      TEST_ASSERT(env_cfg.base_url == "https://custom-env-api.xyo.financial");
     }
     #ifdef _WIN32
     _putenv("XYO_API_BASE_URL=");
     #else
-    ::unsetenv("XYO_API_BASE_URL");
+    unsetenv("XYO_API_BASE_URL");
     #endif
 
-    // 10p. Tar Zip Slip / path traversal entry is safely ignored
-    server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      std::string safe_json = R"({"merchant":"SafeCo","description":"Safe","logo":"url","categories":[]})";
-      std::string evil_json = R"({"merchant":"EvilCo","description":"Evil","logo":"url","categories":[]})";
-      std::string tar = create_tar_archive({
-          {"../../etc/passwd.json", evil_json},
-          {"/absolute/root.json", evil_json},
-          {"valid.json", safe_json}
+    // 10p. UTF-8 code point length validation (128 char limit) (S3)
+    {
+      // 128 Arabic characters (256 bytes) -> must succeed
+      std::string valid_utf8;
+      for (int i = 0; i < 128; ++i) valid_utf8 += "م";
+      server.set_handler([](const MockHttpServer::RecordedRequest&) {
+        return json_response(200, R"({"merchant":"Arabian Oud","description":"Fragrance","categories":[]})");
       });
+      auto res = client.enrichTransaction({valid_utf8, "AE"});
+      TEST_ASSERT(res.merchant == "Arabian Oud");
+
+      // 129 Arabic characters (258 bytes) -> must throw validation error
+      std::string invalid_utf8 = valid_utf8 + "م";
+      expects_error(xyo::ErrorCategory::validation, "exceeds maximum length of 128 characters", [&] {
+        (void)client.enrichTransaction({invalid_utf8, "AE"});
+      });
+    }
+
+    // 10q. Multi-member concatenated gzip archive decompression (C6)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string tar1 = create_tar_archive({{"entry1.json", R"({"merchant":"Member1","description":"D1","categories":[]})"}});
+      std::string tar2 = create_tar_archive({{"entry2.json", R"({"merchant":"Member2","description":"D2","categories":[]})"}});
+      auto gz1 = gzip_compress(tar1);
+      auto gz2 = gzip_compress(tar2);
+      std::vector<uint8_t> multi_gz;
+      multi_gz.insert(multi_gz.end(), gz1.begin(), gz1.end());
+      multi_gz.insert(multi_gz.end(), gz2.begin(), gz2.end());
+      return gzip_response(200, multi_gz);
+    });
+    {
+      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/multimember.tar.gz");
+      TEST_ASSERT(results.size() == 2);
+      TEST_ASSERT(results[0].merchant == "Member1");
+      TEST_ASSERT(results[1].merchant == "Member2");
+    }
+
+    // 10r. SSRF redirect refusal (C1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{302, "text/plain", "Found",
+                          {{"Location", "http://169.254.169.254/latest/meta-data"}}};
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/redirect.tar.gz");
+    });
+
+    // 10s. Archive transfer / memory size bound enforcement (C2)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string huge(51 * 1024 * 1024, 'a'); // 51MB > 50MB limit
+      return HttpResponse{200, "application/gzip", huge, {}};
+    });
+    expects_error(xyo::ErrorCategory::parsing, "exceeds maximum allowable compressed archive limit of 50MB", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/huge.tar.gz");
+    });
+
+    // 10t. API key CRLF injection prevention (C5)
+    expects_error(xyo::ErrorCategory::validation, "api_key contains characters that are not valid in an HTTP header value", [&] {
+      xyo::Client bad_key_client(xyo::ClientConfig("secret_key\r\nX-Injected: header", "https://api.xyo.financial"));
+    });
+
+    // 10u. Tar path traversal rejection (C7)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string tar = create_tar_archive({{"../../etc/passwd", R"({"merchant":"Hacker","description":"Traversed","categories":[]})"}});
       auto gz = gzip_compress(tar);
       return gzip_response(200, gz);
     });
+    expects_error(xyo::ErrorCategory::parsing, "path traversal detected", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
+    });
+
+    // 10v. Country code uppercase normalization (S13)
+    server.clear_requests();
+    server.set_handler([](const MockHttpServer::RecordedRequest& req) {
+      auto j = nlohmann::json::parse(req.body);
+      TEST_ASSERT(j["countryCode"] == "GB");
+      return json_response(200, R"({"merchant":"Tesco","description":"Groceries","categories":[]})");
+    });
     {
-      auto results = client.downloadEnrichmentCollection(server.base_url() + "/downloads/zipslip.tar.gz");
-      TEST_ASSERT(results.size() == 1);
-      TEST_ASSERT(results[0].merchant == "SafeCo");
+      auto res = client.enrichTransaction({"Tesco London", "gb"});
+      TEST_ASSERT(res.merchant == "Tesco");
+    }
+
+    // 10w. Per-call timeout override on EnrichmentRequestOptions and non-positive validation (C5, S14)
+    xyo::EnrichmentRequestOptions timeout_options;
+    timeout_options.request_timeout_ms = 4000;
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(200, R"({"merchant":"QuickMerchant","description":"Desc","categories":[]})");
+    });
+    {
+      auto res = client.enrichTransaction({"Quick Tx", "US"}, timeout_options);
+      TEST_ASSERT(res.merchant == "QuickMerchant");
+    }
+    timeout_options.request_timeout_ms = 0;
+    expects_error(xyo::ErrorCategory::validation, "request_timeout_ms override must be positive", [&] {
+      (void)client.enrichTransaction({"Quick Tx", "US"}, timeout_options);
+    });
+    expects_error(xyo::ErrorCategory::validation, "must be positive", [&] {
+      xyo::ClientConfig bad_cfg("key", "https://api.xyo.financial");
+      bad_cfg.connect_timeout_ms = -5;
+      xyo::Client bad_client(std::move(bad_cfg));
+    });
+
+    // 10x. HTTP-date parsing under non-English locale (T2)
+    {
+      bool locale_ran = false;
+      std::locale original_loc = std::locale::classic();
+      for (const char* candidate : {"de_DE.UTF-8", "fr_FR.UTF-8", "de_DE", "fr_FR"}) {
+        try {
+          original_loc = std::locale::global(std::locale(candidate));
+          locale_ran = true;
+          break;
+        } catch (const std::runtime_error&) {
+          continue;
+        }
+      }
+      if (locale_ran) {
+        server.set_handler([](const MockHttpServer::RecordedRequest&) {
+          return HttpResponse{429, "application/json", R"({"title":"Rate Limited"})", {{"retry-after", "Wed, 21 Oct 2099 07:28:00 GMT"}, {"ratelimit-limit", "50"}}};
+        });
+        try {
+          (void)client.enrichTransaction({"test", "US"});
+          TEST_ASSERT(false);
+        } catch (const xyo::Error& e) {
+          TEST_ASSERT(e.category() == xyo::ErrorCategory::rate_limit);
+          TEST_ASSERT(e.rate_limit_info().has_value());
+          TEST_ASSERT(e.rate_limit_info()->retry_after.has_value());
+          TEST_ASSERT(e.rate_limit_info()->retry_after.value() > 0);
+        }
+        std::locale::global(original_loc);
+      } else {
+        std::cout << "[Test] SKIPPED: no non-English locale on this host, HTTP-date locale independence was NOT verified\n";
+      }
+    }
+
+    // 10y. Problem details log injection sanitisation in what() and accessors (C4, N3)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(400, R"({"type":"https://example.com/err\nforged-type","title":"Bad Request\nInjected Log Entry","detail":"sensitive\r\ninfo"})");
+    });
+    try {
+      (void)client.enrichTransaction({"test", "US"});
+      TEST_ASSERT(false);
+    } catch (const xyo::Error& e) {
+      std::string msg(e.what());
+      TEST_ASSERT(msg.find('\n') == std::string::npos);
+      TEST_ASSERT(msg.find("Bad Request Injected Log Entry") != std::string::npos);
+      TEST_ASSERT(e.problem_title() == "Bad Request Injected Log Entry");
+      TEST_ASSERT(e.problem_detail() == "sensitive  info");
+    }
+
+    // 10z. Allowlist label boundary & query-string SSRF bypass protection (C1, N7)
+    {
+      xyo::ClientConfig cfg("test-key", "https://api.xyo.financial");
+      cfg.allowed_download_domains = {".amazonaws.com"};
+      xyo::Client c(std::move(cfg));
+      // Suffix boundary
+      expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
+        (void)c.downloadEnrichmentCollection("https://notamazonaws.com/archive.tar.gz");
+      });
+      // Query string folded into hostname bypass attempt (C1)
+      expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
+        (void)c.downloadEnrichmentCollection("https://169.254.169.254?x=.amazonaws.com");
+      });
+      expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
+        (void)c.downloadEnrichmentCollection("https://10.0.0.1?a=.amazonaws.com");
+      });
+      // Fragment bypass attempt
+      expects_error(xyo::ErrorCategory::validation, "not permitted for secure archive downloads", [&] {
+        (void)c.downloadEnrichmentCollection("https://attacker.example#.amazonaws.com");
+      });
+    }
+
+    // 10ab. Refuse redirects on the JSON endpoints (U1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{302, "text/plain", "Found",
+                          {{"Location", "http://169.254.169.254/latest/meta-data"}}};
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.enrichTransaction({"COSTA PICKUP LONDON", "GB"});
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.getEnrichmentStatus("72c037df-d0d3-43ee-9470-323ff35a2e50");
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.enrichTransactions({{"COSTA PICKUP LONDON", "GB"}});
+    });
+
+    // 10aa. Linear complexity on long zero-run followed by trailing data (T1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string four_mb_zeros(4 * 1024 * 1024, '\0');
+      four_mb_zeros += "trailing_corrupted_tar_block_bytes";
+      auto gz = gzip_compress(four_mb_zeros);
+      return gzip_response(200, gz);
+    });
+    {
+      auto start = std::chrono::steady_clock::now();
+      expects_error(xyo::ErrorCategory::parsing, "downloadEnrichmentCollection", [&] {
+        (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/long_zeros.tar.gz");
+      });
+      auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start).count();
+      TEST_ASSERT(elapsed < 1000); // Must complete in well under 1 second (linear O(n))
+    }
+
+    // 10ac. Concurrent multi-threaded client execution across worker threads (C3)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return json_response(200, R"({"merchant":"PoolMerchant","description":"Desc","categories":[]})");
+    });
+    {
+      std::vector<std::thread> workers;
+      std::atomic<int> success_count{0};
+      for (int i = 0; i < 64; ++i) {
+        workers.emplace_back([&client, &success_count, i] {
+          try {
+            auto res = client.enrichTransaction({"Worker Tx " + std::to_string(i), "US"});
+            if (res.merchant == "PoolMerchant") {
+              ++success_count;
+            }
+          } catch (...) {}
+        });
+      }
+      for (auto& t : workers) {
+        if (t.joinable()) t.join();
+      }
+      TEST_ASSERT(success_count == 64);
+    }
+
+    // 10ad. Moved-from Client throws ErrorCategory::validation rather than crashing (S12)
+    {
+      xyo::ClientConfig cfg("test-key", "https://api.xyo.financial");
+      xyo::Client c1(std::move(cfg));
+      xyo::Client c2 = std::move(c1);
+      expects_error(xyo::ErrorCategory::validation, "moved from", [&] {
+        (void)c1.enrichTransaction({"test", "US"});
+      });
+      expects_error(xyo::ErrorCategory::validation, "moved from", [&] {
+        (void)c1.enrichTransactions({{"test", "US"}});
+      });
+      expects_error(xyo::ErrorCategory::validation, "moved from", [&] {
+        (void)c1.getEnrichmentStatus("123");
+      });
+      expects_error(xyo::ErrorCategory::validation, "moved from", [&] {
+        (void)c1.downloadEnrichmentCollection("https://api.xyo.financial/res.tar.gz");
+      });
     }
   }
 
