@@ -26,6 +26,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -265,6 +266,10 @@ class MockHttpServer {
 #else
       int client_sock = accept(server_fd_, reinterpret_cast<sockaddr*>(&client_addr), &client_len);
       if (client_sock < 0) break;
+#if defined(__APPLE__) || defined(__MACH__)
+      int set_nosigpipe = 1;
+      setsockopt(client_sock, SOL_SOCKET, SO_NOSIGPIPE, &set_nosigpipe, sizeof(set_nosigpipe));
+#endif
 #endif
 
       std::string raw_req;
@@ -451,6 +456,9 @@ std::vector<uint8_t> gzip_compress(const std::string& data) {
 }  // namespace
 
 int main() {
+#ifndef _WIN32
+  std::signal(SIGPIPE, SIG_IGN);
+#endif
   std::cout << "[XYO SDK Tests] Starting test suite...\n";
 
   // ---------------------------------------------------------------------------
