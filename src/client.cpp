@@ -63,7 +63,7 @@ inline std::string to_ascii_lower(std::string_view sv) {
 
 inline std::string sanitize_for_message(std::string_view s, std::size_t max_len = 200) {
   std::string out;
-  std::size_t limit = (std::min)(s.size(), max_len);
+  std::size_t limit = (std::min<std::size_t>)(s.size(), max_len);
   out.reserve(limit);
   for (char c : s.substr(0, limit)) {
     unsigned char u = static_cast<unsigned char>(c);
@@ -184,7 +184,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
 
   if (auto val = find_val({"retry-after"})) {
     try {
-      info.retry_after = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
+      info.retry_after = (std::max<int64_t>)(0, std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
       // Parse RFC 7231 / RFC 9110 HTTP-date string (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
@@ -212,7 +212,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-limit", "x-ratelimit-limit"})) {
     try {
-      info.limit = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
+      info.limit = (std::max<int64_t>)(0, std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -220,7 +220,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-remaining", "x-ratelimit-remaining"})) {
     try {
-      info.remaining = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
+      info.remaining = (std::max<int64_t>)(0, std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -228,7 +228,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-reset", "x-ratelimit-reset"})) {
     try {
-      info.reset = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
+      info.reset = (std::max<int64_t>)(0, std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -506,7 +506,7 @@ class SessionPool {
     std::unique_ptr<cpr::Session> sess_;
   };
 
-  explicit SessionPool(std::size_t cap = 16) : cap_((std::max)(std::size_t{1}, cap)) {}
+  explicit SessionPool(std::size_t cap = 16) : cap_((std::max<std::size_t>)(std::size_t{1}, cap)) {}
 
   Lease take() {
     std::lock_guard<std::mutex> lk(mu_);
@@ -642,7 +642,7 @@ struct Client::Impl {
 
   explicit Impl(ClientConfig cfg)
       : config(std::move(cfg)),
-        session_pool((std::max)(std::size_t{1}, static_cast<std::size_t>(std::thread::hardware_concurrency()))) {}
+        session_pool((std::max<std::size_t>)(std::size_t{1}, static_cast<std::size_t>(std::thread::hardware_concurrency()))) {}
 
   cpr::Response send_request(const std::string& subpath,
                              const std::string& method,
@@ -1092,7 +1092,7 @@ Client::downloadEnrichmentCollection(
   }
 
   std::string full_url = downloadUrl;
-  std::string lower_prefix = to_ascii_lower(downloadUrl.substr(0, (std::min)(downloadUrl.size(), std::size_t{8})));
+  std::string lower_prefix = to_ascii_lower(downloadUrl.substr(0, (std::min<std::size_t>)(downloadUrl.size(), std::size_t{8})));
   if (lower_prefix.rfind("http://", 0) != 0 && lower_prefix.rfind("https://", 0) != 0) {
     std::string base = impl_->config.base_url;
     if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
