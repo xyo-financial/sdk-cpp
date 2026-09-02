@@ -380,7 +380,7 @@ ParsedUrl parse_url(const std::string& url_str) {
       throw Error(ErrorCategory::validation, "invalid URL format: malformed IPv6 literal");
     }
     res.host = to_ascii_lower(host_port.substr(0, close_bracket + 1));
-    constexpr std::string_view kIpv6Chars = "abcdef0123456789:[]";
+    constexpr std::string_view kIpv6Chars = "abcdef0123456789:.[]";
     if (res.host.empty() || res.host.find_first_not_of(kIpv6Chars) != std::string::npos) {
       throw Error(ErrorCategory::validation, "invalid URL format: illegal character in IPv6 host");
     }
@@ -446,8 +446,15 @@ EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
   const auto address_it     = json_data.find("address");
   const auto end_it         = json_data.end();
 
-  if (merchant_it == end_it && description_it == end_it && categories_it == end_it &&
-      logo_it == end_it && location_it == end_it && address_it == end_it) {
+  const bool any_valid_field =
+      (merchant_it    != end_it && merchant_it->is_string()) ||
+      (description_it != end_it && description_it->is_string()) ||
+      (categories_it  != end_it && categories_it->is_array())  ||
+      (logo_it        != end_it && logo_it->is_string())       ||
+      (location_it    != end_it) ||
+      (address_it     != end_it);
+
+  if (!any_valid_field) {
     throw Error(ErrorCategory::parsing,
                 "parse_enrichment_response: malformed response containing no valid fields");
   }
@@ -529,8 +536,6 @@ class SessionPool {
 
  private:
   void give_back(std::unique_ptr<cpr::Session> s) {
-    // Drop stack-capturing progress callback before session is visible to any other thread (N4).
-    s->SetProgressCallback(cpr::ProgressCallback{});
     std::lock_guard<std::mutex> lk(mu_);
     if (free_.size() < cap_) {
       free_.push_back(std::move(s));
@@ -694,16 +699,16 @@ struct Client::Impl {
     s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(config.connect_timeout_ms)});
     s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(effective_timeout_ms)});
 
-    bool size_exceeded = false;
+    auto size_exceeded = std::make_shared<bool>(false);
     s.SetProgressCallback(cpr::ProgressCallback{
-        [&size_exceeded](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-                         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+        [size_exceeded](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+                        cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
           if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) {
-            size_exceeded = true;
+            *size_exceeded = true;
             return false;
           }
           if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) {
-            size_exceeded = true;
+            *size_exceeded = true;
             return false;
           }
           return true;
@@ -711,7 +716,7 @@ struct Client::Impl {
 
     cpr::Response res = (method == "POST") ? s.Post() : s.Get();
 
-    if (size_exceeded) {
+    if (*size_exceeded) {
       throw Error(ErrorCategory::parsing,
                   "JSON response exceeded safety ceiling of 10MB");
     }

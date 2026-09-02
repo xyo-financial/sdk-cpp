@@ -1207,6 +1207,15 @@ int main() {
       (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/garbage.tar.gz");
     });
 
+    // 10i3. All fields present but wrongly typed is malformed, not empty (S8, P1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      std::string j = R"({"merchant":123,"description":false,"categories":"x","logo":9})";
+      return gzip_response(200, gzip_compress(create_tar_archive({{"bad.json", j}})));
+    });
+    expects_error(xyo::ErrorCategory::parsing, "no valid fields", [&] {
+      (void)client.downloadEnrichmentCollection(server.base_url() + "/downloads/wrongtypes.tar.gz");
+    });
+
     // 10j. Transport error for unreachable host
     int unreachable_port = get_free_port();
     xyo::Client unreachable_client(xyo::ClientConfig("key", "http://127.0.0.1:" + std::to_string(unreachable_port), true));
@@ -1241,6 +1250,14 @@ int main() {
     expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
       (void)client.downloadEnrichmentCollection("http://127.0.0.1:00000000000000000443/downloads");
     });
+
+    // 10k2b. IPv4-mapped IPv6 literals parse successfully and fail on transport (P2)
+    {
+      const std::string closed = std::to_string(get_free_port());
+      expects_error(xyo::ErrorCategory::transport, "", [&] {
+        (void)client.downloadEnrichmentCollection("http://[::ffff:127.0.0.1]:" + closed + "/archive.tar.gz");
+      });
+    }
 
     // 10k3. Legitimate @ in path/query is accepted (S1)
     {
@@ -1519,21 +1536,6 @@ int main() {
       });
     }
 
-    // 10ab. Refuse redirects on the JSON endpoints (U1)
-    server.set_handler([](const MockHttpServer::RecordedRequest&) {
-      return HttpResponse{302, "text/plain", "Found",
-                          {{"Location", "http://169.254.169.254/latest/meta-data"}}};
-    });
-    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
-      (void)client.enrichTransaction({"COSTA PICKUP LONDON", "GB"});
-    });
-    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
-      (void)client.getEnrichmentStatus("72c037df-d0d3-43ee-9470-323ff35a2e50");
-    });
-    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
-      (void)client.enrichTransactions({{"COSTA PICKUP LONDON", "GB"}});
-    });
-
     // 10aa. Linear complexity on long zero-run followed by trailing data (T1)
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       std::string four_mb_zeros(4 * 1024 * 1024, '\0');
@@ -1550,6 +1552,21 @@ int main() {
           std::chrono::steady_clock::now() - start).count();
       TEST_ASSERT(elapsed < 1000); // Must complete in well under 1 second (linear O(n))
     }
+
+    // 10ab. Refuse redirects on the JSON endpoints (U1)
+    server.set_handler([](const MockHttpServer::RecordedRequest&) {
+      return HttpResponse{302, "text/plain", "Found",
+                          {{"Location", "http://169.254.169.254/latest/meta-data"}}};
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.enrichTransaction({"COSTA PICKUP LONDON", "GB"});
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.getEnrichmentStatus("72c037df-d0d3-43ee-9470-323ff35a2e50");
+    });
+    expects_error(xyo::ErrorCategory::http, "HTTP 302", [&] {
+      (void)client.enrichTransactions({{"COSTA PICKUP LONDON", "GB"}});
+    });
 
     // 10ac. Concurrent multi-threaded client execution across worker threads (C3)
     server.set_handler([](const MockHttpServer::RecordedRequest&) {

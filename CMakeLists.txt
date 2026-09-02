@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(XYOSDK VERSION 3.0.0 LANGUAGES CXX)
+project(XYOSDK VERSION 2.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
