@@ -373,23 +373,29 @@ ParsedUrl parse_url(const std::string& url_str) {
     throw Error(ErrorCategory::validation, "invalid URL format: missing host");
   }
 
-  // Handle IPv6 literals: [2600:1f18::1]:443 or [::1] (S2)
+  // Handle IPv6 literals: [2600:1f18::1]:443 or [::1] (S2, N8)
   if (host_port.front() == '[') {
     std::size_t close_bracket = host_port.find(']');
     if (close_bracket == std::string::npos) {
       throw Error(ErrorCategory::validation, "invalid URL format: malformed IPv6 literal");
     }
     res.host = to_ascii_lower(host_port.substr(0, close_bracket + 1));
+    constexpr std::string_view kIpv6Chars = "abcdef0123456789:[]";
+    if (res.host.empty() || res.host.find_first_not_of(kIpv6Chars) != std::string::npos) {
+      throw Error(ErrorCategory::validation, "invalid URL format: illegal character in IPv6 host");
+    }
+
     std::string remainder = host_port.substr(close_bracket + 1);
     if (!remainder.empty()) {
       if (remainder.front() != ':') {
         throw Error(ErrorCategory::validation, "invalid URL format: garbage after IPv6 closing bracket");
       }
       std::string port_str = remainder.substr(1);
-      if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
+      if (port_str.empty() || port_str.size() > 5 ||
+          !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
         throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
       }
-      int p = std::stoi(port_str);
+      const int p = std::stoi(port_str);
       if (p < 1 || p > 65535) {
         throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
       }
@@ -402,10 +408,11 @@ ParsedUrl parse_url(const std::string& url_str) {
     if (port_pos != std::string::npos) {
       res.host = to_ascii_lower(host_port.substr(0, port_pos));
       std::string port_str = host_port.substr(port_pos + 1);
-      if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
+      if (port_str.empty() || port_str.size() > 5 ||
+          !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
         throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
       }
-      int p = std::stoi(port_str);
+      const int p = std::stoi(port_str);
       if (p < 1 || p > 65535) {
         throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
       }
@@ -414,12 +421,12 @@ ParsedUrl parse_url(const std::string& url_str) {
       res.host = to_ascii_lower(host_port);
       res.port = (res.scheme == "https") ? 443 : 80;
     }
-  }
 
-  // Host charset validation (C1)
-  constexpr std::string_view kHostChars = "abcdefghijklmnopqrstuvwxyz0123456789.-:[]";
-  if (res.host.empty() || res.host.find_first_not_of(kHostChars) != std::string::npos) {
-    throw Error(ErrorCategory::validation, "invalid URL format: illegal character in host");
+    // Host charset validation for standard hostnames (C1, N8)
+    constexpr std::string_view kHostChars = "abcdefghijklmnopqrstuvwxyz0123456789.-";
+    if (res.host.empty() || res.host.find_first_not_of(kHostChars) != std::string::npos) {
+      throw Error(ErrorCategory::validation, "invalid URL format: illegal character in host");
+    }
   }
 
   return res;
@@ -431,55 +438,57 @@ EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
                 "parse_enrichment_response: expected JSON object for enrichment response");
   }
 
-  bool has_merchant = json_data.contains("merchant") && json_data["merchant"].is_string();
-  bool has_description = json_data.contains("description") && json_data["description"].is_string();
-  bool has_categories = json_data.contains("categories") && json_data["categories"].is_array();
-  bool has_logo = json_data.contains("logo") && json_data["logo"].is_string();
-  bool has_location = json_data.contains("location");
-  bool has_address = json_data.contains("address");
+  const auto merchant_it    = json_data.find("merchant");
+  const auto description_it = json_data.find("description");
+  const auto categories_it  = json_data.find("categories");
+  const auto logo_it        = json_data.find("logo");
+  const auto location_it    = json_data.find("location");
+  const auto address_it     = json_data.find("address");
+  const auto end_it         = json_data.end();
 
-  if (!has_merchant && !has_description && !has_categories && !has_logo && !has_location && !has_address) {
+  if (merchant_it == end_it && description_it == end_it && categories_it == end_it &&
+      logo_it == end_it && location_it == end_it && address_it == end_it) {
     throw Error(ErrorCategory::parsing,
                 "parse_enrichment_response: malformed response containing no valid fields");
   }
 
   EnrichmentResponse out;
-  if (auto it = json_data.find("merchant"); it != json_data.end() && it->is_string()) {
-    out.merchant = it->get<std::string>();
+  if (merchant_it != end_it && merchant_it->is_string()) {
+    out.merchant = merchant_it->get<std::string>();
   } else {
     out.merchant = "";
   }
-  if (auto it = json_data.find("description"); it != json_data.end() && it->is_string()) {
-    out.description = it->get<std::string>();
+  if (description_it != end_it && description_it->is_string()) {
+    out.description = description_it->get<std::string>();
   } else {
     out.description = "";
   }
-  if (auto it = json_data.find("logo"); it != json_data.end() && it->is_string()) {
-    out.logo = it->get<std::string>();
+  if (logo_it != end_it && logo_it->is_string()) {
+    out.logo = logo_it->get<std::string>();
   } else {
     out.logo = "";
   }
 
-  if (auto it = json_data.find("categories"); it != json_data.end() && it->is_array()) {
-    for (const auto& cat : *it) {
+  if (categories_it != end_it && categories_it->is_array()) {
+    for (const auto& cat : *categories_it) {
       if (cat.is_string()) {
         out.categories.push_back(cat.get<std::string>());
       }
     }
   }
 
-  if (auto it = json_data.find("location"); it != json_data.end() && !it->is_null() && it->is_string()) {
-    out.location = it->get<std::string>();
+  if (location_it != end_it && !location_it->is_null() && location_it->is_string()) {
+    out.location = location_it->get<std::string>();
   }
-  if (auto it = json_data.find("address"); it != json_data.end() && !it->is_null() && it->is_string()) {
-    out.address = it->get<std::string>();
+  if (address_it != end_it && !address_it->is_null() && address_it->is_string()) {
+    out.address = address_it->get<std::string>();
   }
 
   return out;
 }
 
 // ---------------------------------------------------------------------------
-// Bounded Session Pool (C3)
+// Bounded Session Pool (C3, N4, N6)
 // ---------------------------------------------------------------------------
 class SessionPool {
  public:
@@ -493,7 +502,7 @@ class SessionPool {
       }
     }
     Lease(Lease&&) noexcept = default;
-    Lease& operator=(Lease&&) noexcept = default;
+    Lease& operator=(Lease&&) = delete;
     Lease(const Lease&) = delete;
     Lease& operator=(const Lease&) = delete;
 
@@ -520,6 +529,8 @@ class SessionPool {
 
  private:
   void give_back(std::unique_ptr<cpr::Session> s) {
+    // Drop stack-capturing progress callback before session is visible to any other thread (N4).
+    s->SetProgressCallback(cpr::ProgressCallback{});
     std::lock_guard<std::mutex> lk(mu_);
     if (free_.size() < cap_) {
       free_.push_back(std::move(s));
@@ -668,6 +679,13 @@ struct Client::Impl {
     cpr::Session& s = *lease;
     s.SetUrl(cpr::Url{url});
     s.SetHeader(headers);
+
+    // Set only when there is a body. On the GET path the session may still hold
+    // CURLOPT_POSTFIELDS from an earlier POST on this leased session; that is harmless
+    // because CPR clears hasBodyOrPayload_ in Session::Complete() and PrepareGet() then
+    // issues CURLOPT_HTTPGET, which resets the method. Do not "clear" it by setting
+    // an empty body: that marks the session as having a payload and turns the next GET
+    // into a custom-verb request. Multi-threaded session pooling directly depends on this (N5).
     if (!body_dump.empty()) {
       s.SetBody(cpr::Body{std::move(body_dump)});
     }
@@ -675,7 +693,7 @@ struct Client::Impl {
     s.SetVerifySsl(cpr::VerifySsl{true});
     s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(config.connect_timeout_ms)});
     s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(effective_timeout_ms)});
-    
+
     bool size_exceeded = false;
     s.SetProgressCallback(cpr::ProgressCallback{
         [&size_exceeded](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,

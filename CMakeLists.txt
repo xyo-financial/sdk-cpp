@@ -70,12 +70,13 @@ else()
   target_compile_options(xyo_sdk PRIVATE -Wall -Wextra)
 endif()
 
+target_compile_definitions(xyo_sdk INTERFACE $<$<BOOL:${BUILD_SHARED_LIBS}>:XYO_SDK_SHARED>)
+
 set_target_properties(xyo_sdk PROPERTIES
   VERSION     ${PROJECT_VERSION}
-  SOVERSION   3
+  SOVERSION   ${PROJECT_VERSION_MAJOR}
   EXPORT_NAME SDK
   DEFINE_SYMBOL "XYO_SDK_EXPORTS"
-  WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
 
 # ---------------------------------------------------------------------------

@@ -1217,7 +1217,7 @@ int main() {
       (void)client.downloadEnrichmentCollection("http://user:password@127.0.0.1/downloads");
     });
 
-    // 10k2. Invalid port numbers throw bad port number validation error
+    // 10k2. Invalid port numbers throw bad port number validation error (N1)
     expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
       (void)client.downloadEnrichmentCollection("http://127.0.0.1:0/downloads");
     });
@@ -1226,6 +1226,12 @@ int main() {
     });
     expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
       (void)client.downloadEnrichmentCollection("http://127.0.0.1:abc/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:99999999999999999999/downloads");
+    });
+    expects_error(xyo::ErrorCategory::validation, "invalid URL format: bad port number", [&] {
+      (void)client.downloadEnrichmentCollection("http://127.0.0.1:00000000000000000443/downloads");
     });
 
     // 10k3. Legitimate @ in path/query is accepted (S1)
@@ -1520,7 +1526,7 @@ int main() {
       (void)client.enrichTransactions({{"COSTA PICKUP LONDON", "GB"}});
     });
 
-    // 10ac. Linear complexity on long zero-run followed by trailing data (T1)
+    // 10aa. Linear complexity on long zero-run followed by trailing data (T1)
     server.set_handler([](const MockHttpServer::RecordedRequest&) {
       std::string four_mb_zeros(4 * 1024 * 1024, '\0');
       four_mb_zeros += "trailing_corrupted_tar_block_bytes";
