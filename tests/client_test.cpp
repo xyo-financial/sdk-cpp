@@ -1254,8 +1254,10 @@ int main() {
     // 10k2b. IPv4-mapped IPv6 literals parse successfully and fail on transport (P2)
     {
       const std::string closed = std::to_string(get_free_port());
+      xyo::ClientConfig ipv6_cfg("key", "http://[::ffff:127.0.0.1]:" + closed, true);
+      xyo::Client ipv6_client(std::move(ipv6_cfg));
       expects_error(xyo::ErrorCategory::transport, "", [&] {
-        (void)client.downloadEnrichmentCollection("http://[::ffff:127.0.0.1]:" + closed + "/archive.tar.gz");
+        (void)ipv6_client.downloadEnrichmentCollection("http://[::ffff:127.0.0.1]:" + closed + "/archive.tar.gz");
       });
     }
 
