@@ -20,6 +20,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <initializer_list>
@@ -33,7 +34,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace xyo {
@@ -184,7 +184,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
 
   if (auto val = find_val({"retry-after"})) {
     try {
-      info.retry_after = std::stoll(*val);
+      info.retry_after = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
       // Parse RFC 7231 / RFC 9110 HTTP-date string (e.g. "Wed, 21 Oct 2015 07:28:00 GMT")
@@ -212,7 +212,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-limit", "x-ratelimit-limit"})) {
     try {
-      info.limit = std::stoll(*val);
+      info.limit = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -220,7 +220,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-remaining", "x-ratelimit-remaining"})) {
     try {
-      info.remaining = std::stoll(*val);
+      info.remaining = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -228,7 +228,7 @@ inline std::optional<RateLimitInfo> parse_rate_limit_info(const cpr::Header& hea
   }
   if (auto val = find_val({"ratelimit-reset", "x-ratelimit-reset"})) {
     try {
-      info.reset = std::stoll(*val);
+      info.reset = (std::max)(static_cast<int64_t>(0), std::stoll(*val));
       found = true;
     } catch (const std::invalid_argument&) {
     } catch (const std::out_of_range&) {
@@ -281,7 +281,8 @@ inline void check_and_throw_http_error(const cpr::Response& res, const char* op_
     correlation_id = corr_it->second;
   }
 
-  if (res.status_code == 200) {
+  // Accept any 2xx success status code per RFC & OpenAPI contract (S3)
+  if (res.status_code >= 200 && res.status_code < 300) {
     return;
   }
 
@@ -329,11 +330,11 @@ inline void check_and_throw_http_error(const cpr::Response& res, const char* op_
   }
   throw Error(ErrorCategory::http,
               "Unexpected HTTP status from " + std::string(op_name) + ": HTTP " +
-                  std::to_string(res.status_code) + " (expected 200)",
+                  std::to_string(res.status_code),
               res.status_code, 0, rli, correlation_id, prob_type, prob_title, prob_detail, prob_instance);
 }
 
-// Simple URL parser helper
+// Simple URL parser helper (C1, S1, S2, S5)
 struct ParsedUrl {
   std::string scheme;
   std::string host;
@@ -343,53 +344,84 @@ struct ParsedUrl {
 
 ParsedUrl parse_url(const std::string& url_str) {
   ParsedUrl res;
-  if (url_str.find('@') != std::string::npos || url_str.find(' ') != std::string::npos) {
-    throw Error(ErrorCategory::validation, "invalid URL format");
+  if (url_str.find(' ') != std::string::npos) {
+    throw Error(ErrorCategory::validation, "invalid URL format: contains whitespace");
   }
   std::size_t scheme_end = url_str.find("://");
   if (scheme_end == std::string::npos) {
     throw Error(ErrorCategory::validation, "invalid URL format: missing scheme");
   }
   res.scheme = to_ascii_lower(url_str.substr(0, scheme_end));
-
-  std::size_t host_start = scheme_end + 3;
-  std::size_t path_start = url_str.find('/', host_start);
-  std::string host_port;
-  if (path_start == std::string::npos) {
-    host_port = url_str.substr(host_start);
-    res.path = "/";
-  } else {
-    host_port = url_str.substr(host_start, path_start - host_start);
-    res.path = url_str.substr(path_start);
+  if (res.scheme != "http" && res.scheme != "https") {
+    throw Error(ErrorCategory::validation, "invalid URL format: unsupported scheme '" + res.scheme + "' (only http and https are supported)");
   }
 
-  std::size_t port_pos = host_port.find(':');
-  if (port_pos != std::string::npos) {
-    res.host = to_ascii_lower(host_port.substr(0, port_pos));
-    std::string port_str = host_port.substr(port_pos + 1);
-    if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
-      throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
+  const std::size_t host_start = scheme_end + 3;
+  // Authority ends at the first of '/', '?' or '#'. Everything after is path, query, or fragment.
+  const std::size_t auth_end = url_str.find_first_of("/?#", host_start);
+  std::string host_port = (auth_end == std::string::npos)
+                            ? url_str.substr(host_start)
+                            : url_str.substr(host_start, auth_end - host_start);
+  res.path = (auth_end == std::string::npos) ? "/" : url_str.substr(auth_end);
+
+  // Reject userinfo (@) inside the authority (S1)
+  if (host_port.find('@') != std::string::npos) {
+    throw Error(ErrorCategory::validation, "invalid URL format: userinfo (@) is not permitted");
+  }
+
+  if (host_port.empty()) {
+    throw Error(ErrorCategory::validation, "invalid URL format: missing host");
+  }
+
+  // Handle IPv6 literals: [2600:1f18::1]:443 or [::1] (S2)
+  if (host_port.front() == '[') {
+    std::size_t close_bracket = host_port.find(']');
+    if (close_bracket == std::string::npos) {
+      throw Error(ErrorCategory::validation, "invalid URL format: malformed IPv6 literal");
     }
-    try {
+    res.host = to_ascii_lower(host_port.substr(0, close_bracket + 1));
+    std::string remainder = host_port.substr(close_bracket + 1);
+    if (!remainder.empty()) {
+      if (remainder.front() != ':') {
+        throw Error(ErrorCategory::validation, "invalid URL format: garbage after IPv6 closing bracket");
+      }
+      std::string port_str = remainder.substr(1);
+      if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
+      }
       int p = std::stoi(port_str);
       if (p < 1 || p > 65535) {
         throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
       }
       res.port = p;
-    } catch (const Error&) {
-      throw;
-    } catch (...) {
-      throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
+    } else {
+      res.port = (res.scheme == "https") ? 443 : 80;
     }
   } else {
-    res.host = to_ascii_lower(host_port);
-    if (res.scheme == "https") res.port = 443;
-    else if (res.scheme == "http") res.port = 80;
+    std::size_t port_pos = host_port.find(':');
+    if (port_pos != std::string::npos) {
+      res.host = to_ascii_lower(host_port.substr(0, port_pos));
+      std::string port_str = host_port.substr(port_pos + 1);
+      if (port_str.empty() || !std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
+      }
+      int p = std::stoi(port_str);
+      if (p < 1 || p > 65535) {
+        throw Error(ErrorCategory::validation, "invalid URL format: bad port number");
+      }
+      res.port = p;
+    } else {
+      res.host = to_ascii_lower(host_port);
+      res.port = (res.scheme == "https") ? 443 : 80;
+    }
   }
 
-  if (res.host.empty()) {
-    throw Error(ErrorCategory::validation, "invalid URL format: missing host");
+  // Host charset validation (C1)
+  constexpr std::string_view kHostChars = "abcdefghijklmnopqrstuvwxyz0123456789.-:[]";
+  if (res.host.empty() || res.host.find_first_not_of(kHostChars) != std::string::npos) {
+    throw Error(ErrorCategory::validation, "invalid URL format: illegal character in host");
   }
+
   return res;
 }
 
@@ -398,6 +430,19 @@ EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
     throw Error(ErrorCategory::parsing,
                 "parse_enrichment_response: expected JSON object for enrichment response");
   }
+
+  bool has_merchant = json_data.contains("merchant") && json_data["merchant"].is_string();
+  bool has_description = json_data.contains("description") && json_data["description"].is_string();
+  bool has_categories = json_data.contains("categories") && json_data["categories"].is_array();
+  bool has_logo = json_data.contains("logo") && json_data["logo"].is_string();
+  bool has_location = json_data.contains("location");
+  bool has_address = json_data.contains("address");
+
+  if (!has_merchant && !has_description && !has_categories && !has_logo && !has_location && !has_address) {
+    throw Error(ErrorCategory::parsing,
+                "parse_enrichment_response: malformed response containing no valid fields");
+  }
+
   EnrichmentResponse out;
   if (auto it = json_data.find("merchant"); it != json_data.end() && it->is_string()) {
     out.merchant = it->get<std::string>();
@@ -433,6 +478,59 @@ EnrichmentResponse parse_enrichment_response(const nlohmann::json& json_data) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Bounded Session Pool (C3)
+// ---------------------------------------------------------------------------
+class SessionPool {
+ public:
+  class Lease {
+   public:
+    Lease(SessionPool* p, std::unique_ptr<cpr::Session> s)
+        : pool_(p), sess_(std::move(s)) {}
+    ~Lease() {
+      if (pool_ && sess_) {
+        pool_->give_back(std::move(sess_));
+      }
+    }
+    Lease(Lease&&) noexcept = default;
+    Lease& operator=(Lease&&) noexcept = default;
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+
+    cpr::Session& operator*() const noexcept { return *sess_; }
+    cpr::Session* operator->() const noexcept { return sess_.get(); }
+    cpr::Session& get() const noexcept { return *sess_; }
+
+   private:
+    SessionPool* pool_;
+    std::unique_ptr<cpr::Session> sess_;
+  };
+
+  explicit SessionPool(std::size_t cap = 16) : cap_((std::max)(std::size_t{1}, cap)) {}
+
+  Lease take() {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (free_.empty()) {
+      return Lease(this, std::make_unique<cpr::Session>());
+    }
+    auto s = std::move(free_.back());
+    free_.pop_back();
+    return Lease(this, std::move(s));
+  }
+
+ private:
+  void give_back(std::unique_ptr<cpr::Session> s) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (free_.size() < cap_) {
+      free_.push_back(std::move(s));
+    }
+  }
+
+  std::size_t cap_;
+  std::mutex mu_;
+  std::vector<std::unique_ptr<cpr::Session>> free_;
+};
+
 }  // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -444,8 +542,8 @@ std::string to_string(EnrichmentStatus status) {
     case EnrichmentStatus::ready:   return "READY";
     case EnrichmentStatus::failed:  return "FAILED";
     case EnrichmentStatus::pending: return "PENDING";
-    default:                        return "UNKNOWN";
   }
+  return "UNKNOWN";
 }
 
 std::string to_string(ErrorCategory category) {
@@ -455,8 +553,8 @@ std::string to_string(ErrorCategory category) {
     case ErrorCategory::http:       return "http";
     case ErrorCategory::parsing:    return "parsing";
     case ErrorCategory::rate_limit: return "rate_limit";
-    default:                        return "unknown";
   }
+  return "unknown";
 }
 
 // ---------------------------------------------------------------------------
@@ -510,7 +608,7 @@ ClientConfig::~ClientConfig() noexcept {
 }
 
 // ---------------------------------------------------------------------------
-// Error
+// Error (C4)
 // ---------------------------------------------------------------------------
 
 Error::Error(ErrorCategory category, const std::string& message,
@@ -526,11 +624,13 @@ Error::Error(ErrorCategory category, const std::string& message,
       http_status_code_(http_status_code),
       transport_code_(transport_code),
       rate_limit_info_(std::move(rate_limit_info)),
-      correlation_id_(std::move(correlation_id)),
-      problem_type_(std::move(problem_type)),
-      problem_title_(std::move(problem_title)),
-      problem_detail_(std::move(problem_detail)),
-      problem_instance_(std::move(problem_instance)) {}
+      correlation_id_(correlation_id.has_value()
+                          ? std::make_optional(sanitize_for_message(*correlation_id, 128))
+                          : std::nullopt),
+      problem_type_(sanitize_for_message(problem_type, 256)),
+      problem_title_(sanitize_for_message(problem_title, 256)),
+      problem_detail_(sanitize_for_message(problem_detail, 512)),
+      problem_instance_(sanitize_for_message(problem_instance, 256)) {}
 
 // ---------------------------------------------------------------------------
 // Client::Impl
@@ -538,23 +638,22 @@ Error::Error(ErrorCategory category, const std::string& message,
 
 struct Client::Impl {
   ClientConfig config;
-  mutable std::mutex mu;
-  mutable std::unordered_map<std::thread::id, std::unique_ptr<cpr::Session>> sessions;
+  mutable SessionPool session_pool;
 
-  explicit Impl(ClientConfig cfg) : config(std::move(cfg)) {}
-
-  cpr::Session& session() const {
-    const auto tid = std::this_thread::get_id();
-    std::lock_guard<std::mutex> lock(mu);
-    auto& slot = sessions[tid];
-    if (!slot) slot = std::make_unique<cpr::Session>();
-    return *slot;
-  }
+  explicit Impl(ClientConfig cfg)
+      : config(std::move(cfg)),
+        session_pool((std::max)(std::size_t{1}, static_cast<std::size_t>(std::thread::hardware_concurrency()))) {}
 
   cpr::Response send_request(const std::string& subpath,
                              const std::string& method,
-                             const std::string& body_dump,
+                             std::string body_dump,
                              const EnrichmentRequestOptions& options) const {
+    const long effective_timeout_ms = options.request_timeout_ms.value_or(config.request_timeout_ms);
+    if (effective_timeout_ms <= 0) {
+      throw Error(ErrorCategory::validation,
+                  "request_timeout_ms override must be positive; leave the optional empty to use client default");
+    }
+
     std::string url = config.base_url;
     if (!url.empty() && url.back() == '/') url.pop_back();
     url += subpath;
@@ -565,23 +664,41 @@ struct Client::Impl {
         "application/json",
         options);
 
-    auto& s = session();
+    auto lease = session_pool.take();
+    cpr::Session& s = *lease;
     s.SetUrl(cpr::Url{url});
     s.SetHeader(headers);
     if (!body_dump.empty()) {
-      s.SetBody(cpr::Body{body_dump});
+      s.SetBody(cpr::Body{std::move(body_dump)});
     }
+    s.SetRedirect(cpr::Redirect{false});
+    s.SetVerifySsl(cpr::VerifySsl{true});
     s.SetConnectTimeout(cpr::ConnectTimeout{std::chrono::milliseconds(config.connect_timeout_ms)});
-    s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(config.request_timeout_ms))});
+    s.SetTimeout(cpr::Timeout{std::chrono::milliseconds(effective_timeout_ms)});
+    
+    bool size_exceeded = false;
     s.SetProgressCallback(cpr::ProgressCallback{
-        [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-           cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
-          if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) return false;
-          if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) return false;
+        [&size_exceeded](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+                         cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+          if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_JSON_RESPONSE_SIZE) {
+            size_exceeded = true;
+            return false;
+          }
+          if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_JSON_RESPONSE_SIZE) {
+            size_exceeded = true;
+            return false;
+          }
           return true;
         }});
 
-    return (method == "POST") ? s.Post() : s.Get();
+    cpr::Response res = (method == "POST") ? s.Post() : s.Get();
+
+    if (size_exceeded) {
+      throw Error(ErrorCategory::parsing,
+                  "JSON response exceeded safety ceiling of 10MB");
+    }
+
+    return res;
   }
 };
 
@@ -596,6 +713,10 @@ Client::Client(ClientConfig config) {
   if (!is_valid_header_value(config.api_key)) {
     throw Error(ErrorCategory::validation,
                 "api_key contains characters that are not valid in an HTTP header value (check for a trailing newline)");
+  }
+  if (config.connect_timeout_ms <= 0 || config.request_timeout_ms <= 0) {
+    throw Error(ErrorCategory::validation,
+                "connect_timeout_ms and request_timeout_ms must be positive; libcurl treats 0 as no timeout at all");
   }
   ParsedUrl u = parse_url(config.base_url);
   if (u.scheme != "https" && !config.allow_insecure_transport) {
@@ -615,6 +736,9 @@ Client::~Client() noexcept = default;
 EnrichmentResponse Client::enrichTransaction(
     const EnrichmentRequest& request,
     const EnrichmentRequestOptions& options) const {
+  if (!impl_) {
+    throw Error(ErrorCategory::validation, "Client instance has been moved from");
+  }
   validate_request(request, "enrichTransaction");
 
   nlohmann::json body = {
@@ -650,6 +774,9 @@ EnrichmentResponse Client::enrichTransaction(
 BulkEnrichmentResponse Client::enrichTransactions(
     const std::vector<EnrichmentRequest>& requests,
     const EnrichmentRequestOptions& options) const {
+  if (!impl_) {
+    throw Error(ErrorCategory::validation, "Client instance has been moved from");
+  }
 
   validate_batch_size(requests.size(), impl_->config.max_collection_size);
 
@@ -701,6 +828,9 @@ BulkEnrichmentResponse Client::enrichTransactions(
 EnrichmentStatus Client::getEnrichmentStatus(
     const std::string& id,
     const EnrichmentRequestOptions& options) const {
+  if (!impl_) {
+    throw Error(ErrorCategory::validation, "Client instance has been moved from");
+  }
   validate_job_id(id);
 
   cpr::Response res = impl_->send_request("/v1/ai/finance/enrichment/status/" + id, "GET", "", options);
@@ -858,9 +988,21 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     char chk_field[9] = {};
     std::memcpy(chk_field, hdr + 148, 8);
     unsigned int actual_chk = static_cast<unsigned int>(std::strtoul(chk_field, nullptr, 8));
-    if (actual_chk != 0 && actual_chk != expected_chk) {
+    if (actual_chk != expected_chk) {
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: tar header checksum mismatch");
+    }
+
+    // Require ustar magic before trusting any header fields (C6)
+    if (std::memcmp(hdr + 257, "ustar", 5) != 0) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: not a ustar tar header");
+    }
+
+    // Reject GNU base-256 binary sizes (C6)
+    if (static_cast<unsigned char>(hdr[TAR_SIZE_OFFSET]) & 0x80) {
+      throw xyo::Error(xyo::ErrorCategory::parsing,
+                       "downloadEnrichmentCollection: base-256 tar size fields are not supported");
     }
 
     char typeflag = hdr[TAR_TYPE_OFFSET];
@@ -875,7 +1017,7 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     if (is_path_traversal(entry_name)) {
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: path traversal detected in tar archive entry '" +
-                       entry_name + "'");
+                       sanitize_for_message(entry_name) + "'");
     }
 
     if (typeflag == '5') {
@@ -883,7 +1025,8 @@ std::vector<std::string_view> parse_tar_entries(const std::string& tar_bytes) {
     } else if (typeflag != '0' && typeflag != '\0') {
       throw xyo::Error(xyo::ErrorCategory::parsing,
                        "downloadEnrichmentCollection: unsupported tar entry typeflag '" +
-                       std::string(1, typeflag) + "' for entry '" + entry_name + "'");
+                       sanitize_for_message(std::string(1, typeflag)) + "' for entry '" +
+                       sanitize_for_message(entry_name) + "'");
     } else if (file_size > 0) {
       if (file_size > MAX_ENTRY_BYTES) {
         throw xyo::Error(xyo::ErrorCategory::parsing,
@@ -934,13 +1077,23 @@ std::vector<EnrichmentResponse>
 Client::downloadEnrichmentCollection(
     const std::string& downloadUrl,
     const EnrichmentRequestOptions& options) const {
+  if (!impl_) {
+    throw Error(ErrorCategory::validation, "Client instance has been moved from");
+  }
   if (downloadUrl.empty()) {
     throw Error(ErrorCategory::validation,
                 "downloadEnrichmentCollection: downloadUrl must not be empty");
   }
 
+  const long effective_timeout_ms = options.request_timeout_ms.value_or(impl_->config.request_timeout_ms);
+  if (effective_timeout_ms <= 0) {
+    throw Error(ErrorCategory::validation,
+                "request_timeout_ms override must be positive; leave the optional empty to use client default");
+  }
+
   std::string full_url = downloadUrl;
-  if (downloadUrl.rfind("http://", 0) != 0 && downloadUrl.rfind("https://", 0) != 0) {
+  std::string lower_prefix = to_ascii_lower(downloadUrl.substr(0, (std::min)(downloadUrl.size(), std::size_t{8})));
+  if (lower_prefix.rfind("http://", 0) != 0 && lower_prefix.rfind("https://", 0) != 0) {
     std::string base = impl_->config.base_url;
     if (!base.empty() && base.back() == '/' && !full_url.empty() && full_url.front() == '/') {
       full_url = base + full_url.substr(1);
@@ -991,21 +1144,33 @@ Client::downloadEnrichmentCollection(
       "application/gzip, application/x-tar, application/octet-stream;q=0.9, */*;q=0.8",
       safe_options);
 
+  bool size_exceeded = false;
   cpr::Response response = cpr::Get(
       cpr::Url{full_url},
       headers,
       cpr::Redirect{false},
       cpr::VerifySsl{true},
       cpr::ProgressCallback{
-          [](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
-             cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
-            if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_ARCHIVE_BYTES) return false;
-            if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_ARCHIVE_BYTES) return false;
+          [&size_exceeded](cpr::cpr_off_t dlTotal, cpr::cpr_off_t dlNow,
+                           cpr::cpr_off_t, cpr::cpr_off_t, intptr_t) -> bool {
+            if (dlNow > 0 && static_cast<std::size_t>(dlNow) > MAX_ARCHIVE_BYTES) {
+              size_exceeded = true;
+              return false;
+            }
+            if (dlTotal > 0 && static_cast<std::size_t>(dlTotal) > MAX_ARCHIVE_BYTES) {
+              size_exceeded = true;
+              return false;
+            }
             return true;
           }},
       cpr::ConnectTimeout{std::chrono::milliseconds(impl_->config.connect_timeout_ms)},
-      cpr::Timeout{std::chrono::milliseconds(options.request_timeout_ms.value_or(impl_->config.request_timeout_ms))}
+      cpr::Timeout{std::chrono::milliseconds(effective_timeout_ms)}
   );
+
+  if (size_exceeded) {
+    throw Error(ErrorCategory::parsing,
+                "downloadEnrichmentCollection: response payload exceeds maximum allowable compressed archive limit of 50MB");
+  }
 
   if (response.error.code != cpr::ErrorCode::OK) {
     throw Error(ErrorCategory::transport,
@@ -1016,18 +1181,21 @@ Client::downloadEnrichmentCollection(
   check_and_throw_http_error(response, "downloadEnrichmentCollection");
 
   auto ct_it = response.header.find("content-type");
-  if (ct_it != response.header.end()) {
-    std::string ct_str = ct_it->second;
-    std::string ct_lower = to_ascii_lower(ct_str);
-    if (ct_lower.find("gzip") == std::string::npos &&
-        ct_lower.find("tar") == std::string::npos &&
-        ct_lower.find("octet-stream") == std::string::npos &&
-        ct_lower.find("binary") == std::string::npos) {
-      throw Error(ErrorCategory::http,
-                  "downloadEnrichmentCollection: unexpected Content-Type '" + ct_str +
-                      "' received when expecting binary archive",
-                  response.status_code);
-    }
+  if (ct_it == response.header.end() || ct_it->second.empty()) {
+    throw Error(ErrorCategory::http,
+                "downloadEnrichmentCollection: missing Content-Type header in response",
+                response.status_code);
+  }
+  std::string ct_str = ct_it->second;
+  std::string ct_lower = to_ascii_lower(ct_str);
+  if (ct_lower.find("gzip") == std::string::npos &&
+      ct_lower.find("tar") == std::string::npos &&
+      ct_lower.find("octet-stream") == std::string::npos &&
+      ct_lower.find("binary") == std::string::npos) {
+    throw Error(ErrorCategory::http,
+                "downloadEnrichmentCollection: unexpected Content-Type '" + ct_str +
+                    "' received when expecting binary archive",
+                response.status_code);
   }
 
   if (response.text.size() > MAX_ARCHIVE_BYTES) {

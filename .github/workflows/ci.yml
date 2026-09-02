@@ -41,7 +41,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libssl-dev zlib1g-dev build-essential
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev zlib1g-dev build-essential locales
+          # Test 10x verifies that Retry-After HTTP-date parsing is independent of
+          # the host locale. Without a non-English locale present it silently skips.
+          sudo locale-gen de_DE.UTF-8
 
       - name: Install System Dependencies (macOS)
         if: matrix.os == 'macos-latest'

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(XYOSDK VERSION 2.2.0 LANGUAGES CXX)
+project(XYOSDK VERSION 3.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -72,8 +72,9 @@ endif()
 
 set_target_properties(xyo_sdk PROPERTIES
   VERSION     ${PROJECT_VERSION}
-  SOVERSION   ${PROJECT_VERSION_MAJOR}
+  SOVERSION   3
   EXPORT_NAME SDK
+  DEFINE_SYMBOL "XYO_SDK_EXPORTS"
   WINDOWS_EXPORT_ALL_SYMBOLS ON
 )
 

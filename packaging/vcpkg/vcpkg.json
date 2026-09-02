@@ -1,6 +1,6 @@
 {
   "name": "xyo-sdk",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "XYO SDK for AI Banking Transaction Enrichment API",
   "homepage": "https://github.com/xyo-financial/sdk-cpp",
   "license": "Apache-2.0",

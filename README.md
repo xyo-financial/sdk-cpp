@@ -70,7 +70,7 @@ Add `xyo-sdk` to your `conanfile.txt`:
 
 ```ini
 [requires]
-xyo-sdk/2.2.0
+xyo-sdk/3.0.0
 
 [generators]
 CMakeDeps
