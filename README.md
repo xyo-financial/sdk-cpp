@@ -137,7 +137,7 @@ include(FetchContent)
 FetchContent_Declare(
   xyo_sdk
   GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
-  GIT_TAG        v2.2.0
+  GIT_TAG        v2.1.0
 )
 FetchContent_MakeAvailable(xyo_sdk)
 
