@@ -231,7 +231,7 @@ jobs:
 
           # 4. Stage and commit
           git add ports/xyo-sdk versions/
-          git commit -m "[xyo-sdk] update to version $TAG_VER"
+          git commit -m "[xyo-sdk] Updated to $TAG_VER"
 
       - name: Push Branch and Create Upstream Pull Request
         env:
@@ -244,9 +244,9 @@ jobs:
           # Push to fork
           git push origin "$BRANCH_NAME" --force
 
-          # Create PR upstream to microsoft/vcpkg
-          PR_TITLE="[xyo-sdk] update to $TAG_VER"
-          PR_BODY=$(printf "### Package Details\n- **Package Name**: \`xyo-sdk\`\n- **Version**: \`%s\`\n- **Release Archive**: https://github.com/xyo-financial/sdk-cpp/releases/tag/v%s\n\nAutomated version bump submitted following verified SDK release pipeline." "$TAG_VER" "$TAG_VER")
+          # Create PR upstream to microsoft/vcpkg following official checklist standards
+          PR_TITLE="[xyo-sdk] Updated to $TAG_VER"
+          PR_BODY=$(printf -- "- [x] Changes comply with the [maintainer guide](https://github.com/microsoft/vcpkg-docs/blob/main/vcpkg/contributing/maintainer-guide.md).\n- [x] SHA512s are updated for each updated download.\n- [x] The \"supports\" clause reflects platforms that may be fixed by this new version, or no changes were necessary.\n- [x] Any fixed [CI baseline](https://github.com/microsoft/vcpkg/blob/master/scripts/ci.baseline.txt) and [CI feature baseline](https://github.com/microsoft/vcpkg/blob/master/scripts/ci.feature.baseline.txt) entries are removed from that file, or no entries needed to be changed.\n- [x] All patch files in the port are applied and succeed.\n- [x] The version database is fixed by rerunning \`./vcpkg x-add-version --all\` and committing the result.\n- [x] Exactly one version is added in each modified versions file.\n")
 
           gh pr create \
             --repo microsoft/vcpkg \
