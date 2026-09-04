@@ -247,12 +247,7 @@ jobs:
 
           # Create PR upstream to microsoft/vcpkg
           PR_TITLE="[xyo-sdk] update to $TAG_VER"
-          PR_BODY="### Package Details
-- **Package Name**: \`xyo-sdk\`
-- **Version**: \`$TAG_VER\`
-- **Release Archive**: https://github.com/xyo-financial/sdk-cpp/releases/tag/v$TAG_VER
-
-Automated version bump submitted following verified SDK release pipeline."
+          PR_BODY=$(printf "### Package Details\n- **Package Name**: \`xyo-sdk\`\n- **Version**: \`%s\`\n- **Release Archive**: https://github.com/xyo-financial/sdk-cpp/releases/tag/v%s\n\nAutomated version bump submitted following verified SDK release pipeline." "$TAG_VER" "$TAG_VER")
 
           gh pr create \
             --repo microsoft/vcpkg \
