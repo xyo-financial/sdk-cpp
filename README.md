@@ -11,7 +11,7 @@
   <a href="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml"><img src="https://github.com/xyo-financial/sdk-cpp/actions/workflows/release.yml/badge.svg" alt="Release Pipeline" /></a>
   <a href="https://en.cppreference.com/w/cpp/17"><img src="https://img.shields.io/badge/C%2B%2B-17-blue.svg?logo=c%2B%2B" alt="C++ Standard" /></a>
   <a href="https://en.cppreference.com/w/cpp/language/pimpl"><img src="https://img.shields.io/badge/Architecture-PIMPL%20Wrapper-blueviolet" alt="Architecture" /></a>
-  <a href="https://docs.libcpr.org/"><img src="https://img.shields.io/badge/Transport-CPR%20%2F%20libcurl-informational" alt="Transport" /></a>
+  <a href="https://vcpkg.link/ports/xyo-sdk"><img src="https://img.shields.io/badge/vcpkg-xyo--sdk-5C2D91?logo=vcpkg&logoColor=white" alt="vcpkg port" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License" /></a>
 </p>
 
@@ -90,15 +90,35 @@ cmake --build --preset conan-release
 
 ---
 
-### Option 2: vcpkg
+### Option 2: vcpkg (Official Microsoft Registry)
 
-Install the package via vcpkg:
+The C++ SDK is available directly in the official Microsoft [vcpkg registry](https://vcpkg.link/ports/xyo-sdk).
+
+#### Manifest Mode (Recommended for CMake Projects)
+
+Add `xyo-sdk` to your project's `vcpkg.json`:
+
+```json
+{
+  "name": "my-banking-app",
+  "version": "1.0.0",
+  "dependencies": [
+    "xyo-sdk"
+  ]
+}
+```
+
+#### Classic Mode
+
+Install the package directly into your vcpkg environment:
 
 ```sh
 vcpkg install xyo-sdk
 ```
 
-Configure your CMake project with the vcpkg toolchain:
+#### Build with CMake
+
+Configure and build your CMake project with the vcpkg toolchain:
 
 ```sh
 cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
@@ -137,7 +157,7 @@ include(FetchContent)
 FetchContent_Declare(
   xyo_sdk
   GIT_REPOSITORY https://github.com/xyo-financial/sdk-cpp.git
-  GIT_TAG        v2.2.0
+  GIT_TAG        v2.1.0
 )
 FetchContent_MakeAvailable(xyo_sdk)
 

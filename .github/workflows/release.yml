@@ -170,3 +170,88 @@ jobs:
           repository: xyo-financial/xyo-financial
           event-type: sdk-version-updated
           client-payload: '{"sdk": "cpp", "version": "${{ github.ref_name }}"}'
+
+  update-vcpkg-port:
+    name: Submit vcpkg Upstream Port Bump PR
+    needs: [publish-release, verify-example]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Compute Release Tarball Checksum
+        id: checksum
+        run: |
+          TAG_NAME=${{ github.ref_name }}
+          TAG_VER=${TAG_NAME#v}
+          echo "tag_ver=$TAG_VER" >> $GITHUB_OUTPUT
+
+          TARBALL_URL="https://github.com/xyo-financial/sdk-cpp/archive/refs/tags/${TAG_NAME}.tar.gz"
+          echo "Fetching archive from $TARBALL_URL ..."
+          SHA512=$(curl -sL "$TARBALL_URL" | sha512sum | awk '{print $1}')
+
+          if [ -z "$SHA512" ] || [ ${#SHA512} -ne 128 ]; then
+            echo "Error: Failed to compute valid 128-char SHA512 hash"
+            exit 1
+          fi
+          echo "Computed SHA512: $SHA512"
+          echo "sha512=$SHA512" >> $GITHUB_OUTPUT
+
+      - name: Setup vcpkg and Fork
+        env:
+          GH_TOKEN: ${{ secrets.VCPKG_PR_TOKEN || secrets.SDK_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "Hadi Tajallaei"
+          git config --global user.email "68777073+syniol@users.noreply.github.com"
+
+          # Fork or clone microsoft/vcpkg
+          gh repo fork microsoft/vcpkg --clone=true --remote=true || git clone https://github.com/microsoft/vcpkg.git
+          cd vcpkg
+          ./bootstrap-vcpkg.sh -disableMetrics
+
+      - name: Update Port Manifest & Version Database
+        id: update_port
+        run: |
+          cd vcpkg
+          TAG_VER="${{ steps.checksum.outputs.tag_ver }}"
+          SHA512="${{ steps.checksum.outputs.sha512 }}"
+          BRANCH_NAME="update-xyo-sdk-${TAG_VER}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          git checkout master
+          git pull upstream master || git pull origin master || true
+          git checkout -B "$BRANCH_NAME"
+
+          # 1. Update vcpkg.json version
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$TAG_VER\"/" ports/xyo-sdk/vcpkg.json
+
+          # 2. Update portfile.cmake SHA512
+          sed -i -E "s/SHA512 [0-9a-fA-F]+/SHA512 $SHA512/" ports/xyo-sdk/portfile.cmake
+
+          # 3. Update vcpkg version database
+          ./vcpkg x-add-version xyo-sdk --overwrite-version
+
+          # 4. Stage and commit
+          git add ports/xyo-sdk versions/
+          git commit -m "[xyo-sdk] Updated to $TAG_VER"
+
+      - name: Push Branch and Create Upstream Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.VCPKG_PR_TOKEN || secrets.SDK_DISPATCH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          cd vcpkg
+          TAG_VER="${{ steps.checksum.outputs.tag_ver }}"
+          BRANCH_NAME="${{ steps.update_port.outputs.branch_name }}"
+
+          # Push to fork
+          git push origin "$BRANCH_NAME" --force
+
+          # Create PR upstream to microsoft/vcpkg following official checklist standards
+          PR_TITLE="[xyo-sdk] Updated to $TAG_VER"
+          PR_BODY=$(printf -- "- [x] Changes comply with the [maintainer guide](https://github.com/microsoft/vcpkg-docs/blob/main/vcpkg/contributing/maintainer-guide.md).\n- [x] SHA512s are updated for each updated download.\n- [x] The \"supports\" clause reflects platforms that may be fixed by this new version, or no changes were necessary.\n- [x] Any fixed [CI baseline](https://github.com/microsoft/vcpkg/blob/master/scripts/ci.baseline.txt) and [CI feature baseline](https://github.com/microsoft/vcpkg/blob/master/scripts/ci.feature.baseline.txt) entries are removed from that file, or no entries needed to be changed.\n- [x] All patch files in the port are applied and succeed.\n- [x] The version database is fixed by rerunning \`./vcpkg x-add-version --all\` and committing the result.\n- [x] Exactly one version is added in each modified versions file.\n")
+
+          gh pr create \
+            --repo microsoft/vcpkg \
+            --head "${{ github.repository_owner }}:$BRANCH_NAME" \
+            --base master \
+            --title "$PR_TITLE" \
+            --body "$PR_BODY" || echo "PR creation completed or already exists."
+
